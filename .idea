@@ -1,0 +1,260 @@
+We are building a new open-source project tentatively called **OpenConsole**.
+
+OpenConsole is inspired by the discontinued Teleconsole project but is a new implementation.
+
+Its purpose is to let a user temporarily share a terminal with another person without exposing SSH, configuring port forwarding, or requiring inbound connectivity.
+
+The host machine will run a CLI:
+
+```
+openconsole
+```
+
+The CLI will eventually:
+
+1. Start or attach to a local PTY/shell.
+2. Contact a configurable OpenConsole relay server.
+3. Create a temporary session.
+4. Establish an outbound encrypted WebSocket connection to the relay.
+5. Display a temporary session identifier / URL.
+6. Allow another user to interact with the terminal through the relay.
+7. Destroy the session when the host exits.
+
+Eventually users will be able to join through either:
+
+```
+ssh <session>@console.example.com
+```
+
+or a browser-based xterm.js terminal.
+
+For the initial phases we will implement browser access first. Native SSH access will come later.
+
+## Technology
+
+Use:
+
+* Go for the CLI.
+* Go for the relay server.
+* Go modules.
+* TypeScript/Vite/xterm.js for the browser interface later.
+* WebSockets for host-to-relay and browser-to-relay communication.
+* Docker for server deployment later.
+
+Do not introduce a database, Redis, Kubernetes, message queue, authentication provider, or other infrastructure unless explicitly requested.
+
+The first versions should be intentionally simple and easy to self-host.
+
+## Architectural goals
+
+Maintain strict separation between:
+
+* terminal/PTY handling
+* session management
+* protocol framing
+* tunnel transport
+* HTTP/WebSocket server
+
+Do not tightly couple terminal data to WebSockets because alternative transports may be added in the future.
+
+Create reusable Go packages wherever appropriate.
+
+## Protocol
+
+Create a small protocol abstraction that supports messages conceptually equivalent to:
+
+* OPEN
+* DATA
+* RESIZE
+* PING
+* PONG
+* CLOSE
+* ERROR
+
+Terminal payload data must be capable of being transferred as binary data without JSON/base64 encoding.
+
+Control messages may use JSON.
+
+Design the protocol so multiplexed logical channels can be added later for TCP forwarding, but DO NOT implement multiplexing yet.
+
+Document the decisions in:
+
+```
+docs/protocol.md
+```
+
+## Repository layout
+
+Create approximately:
+
+```
+cmd/
+  openconsole/
+  openconsole-server/
+
+internal/
+  client/
+  server/
+  session/
+  tunnel/
+  protocol/
+  terminal/
+
+docs/
+
+deploy/
+
+web/
+```
+
+Do not create empty abstractions merely to satisfy the directory structure. Only create packages that have an immediate purpose.
+
+## Phase 1 objectives
+
+For this phase ONLY:
+
+1. Initialize the Go project.
+
+2. Create the CLI executable skeleton.
+
+3. Create the server executable skeleton.
+
+4. Implement configuration parsing.
+
+5. Define the protocol message types.
+
+6. Implement secure random session ID generation.
+
+7. Implement an in-memory SessionManager.
+
+8. Build basic HTTP endpoints:
+
+   ```
+   GET /health
+   POST /api/v1/sessions
+   GET /api/v1/sessions/{id}
+   ```
+
+9. A created session should expire automatically after a configurable TTL.
+
+10. Session IDs must be generated using crypto/rand, never math/rand.
+
+11. Add structured logging.
+
+12. Add unit tests for:
+
+    * session ID generation
+    * session creation
+    * session expiration
+    * lookup of nonexistent sessions
+
+13. Create docs/architecture.md describing the planned system.
+
+14. Create docs/protocol.md describing the initial protocol.
+
+15. Create a useful README with local development instructions.
+
+Do NOT yet implement:
+
+* PTYs
+* shells
+* WebSockets
+* terminal streaming
+* browser UI
+* SSH listener
+* TCP forwarding
+* persistent storage
+* user accounts
+* OAuth
+* E2E encryption
+
+We will implement these in subsequent phases.
+
+## Security requirements
+
+Treat all session identifiers and credentials as security-sensitive.
+
+* Use crypto/rand.
+* Never log secret tokens.
+* Do not place authentication secrets into URLs unless specifically designed as a capability URL.
+* Keep public session identifiers separate from secret credentials in the data model.
+* Validate all externally supplied IDs.
+* Set reasonable server timeouts.
+* Avoid unnecessary dependencies.
+* Never invoke a shell using untrusted request parameters.
+
+For now, model sessions so that they can eventually contain both:
+
+```
+SessionID      // safe public identifier
+HostToken      // credential used by host tunnel
+GuestToken     // credential used to join
+```
+
+Tokens should be generated securely even though the tunnel is not implemented yet.
+
+Store only what is needed in memory.
+
+## Configuration
+
+The server should support environment variables and command-line flags where reasonable, including:
+
+```
+OPENCONSOLE_LISTEN_ADDR
+OPENCONSOLE_SESSION_TTL
+OPENCONSOLE_LOG_LEVEL
+```
+
+Defaults:
+
+```
+listen: :8080
+session TTL: 30 minutes
+log level: info
+```
+
+The CLI should eventually support:
+
+```
+--server
+```
+
+but for this phase it may only display version/help information if appropriate.
+
+## Development expectations
+
+Write production-quality idiomatic Go.
+
+Prefer the Go standard library where practical.
+
+Avoid premature abstractions.
+
+Return proper errors instead of panicking.
+
+Pass context.Context through server operations where appropriate.
+
+Use graceful HTTP server shutdown.
+
+Use comments to explain architectural decisions rather than obvious code.
+
+Run:
+
+```
+gofmt
+go vet ./...
+go test ./...
+```
+
+before considering the phase complete.
+
+At the end, provide:
+
+1. A summary of files created.
+2. Important architectural decisions made.
+3. Exact commands to build and run the server.
+4. Example curl commands that prove session creation works.
+5. Test results.
+6. Any issues or decisions that should be addressed before Phase 2.
+
+Do not proceed into Phase 2.
+

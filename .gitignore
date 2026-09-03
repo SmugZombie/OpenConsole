@@ -1,0 +1,13 @@
+# Build output
+/bin/
+/dist/
+openconsole
+openconsole-server
+
+# Editor / OS
+.DS_Store
+.vscode/
+
+# Go
+*.test
+*.out
