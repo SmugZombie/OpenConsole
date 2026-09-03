@@ -4,6 +4,12 @@
 openconsole
 openconsole-server
 
+# Web toolchain. internal/webui/dist is generated but IS committed, so that
+# `go build` produces a relay with a working UI and no Node toolchain. Rebuild
+# it with `npm --prefix web run build` after changing anything under web/src.
+web/node_modules/
+web/.vite/
+
 # Editor / OS
 .DS_Store
 .vscode/

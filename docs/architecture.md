@@ -6,8 +6,8 @@ a single **outbound** connection to a relay; guests reach the terminal through
 that relay.
 
 This document describes the whole planned system and marks what exists today.
-Terminal sharing works as of Phase 2: a host can share a real shell and guests
-can attach to it. The browser client, SSH access and TCP forwarding are still to
+Terminal sharing works: a host shares a real shell, and guests attach from
+another terminal or from a browser. SSH access and TCP forwarding are still to
 come.
 
 ## The problem
@@ -20,14 +20,16 @@ both sides dial out to, so neither end needs to be reachable.
 ## Components
 
 ```
-  host machine                    relay server                    guest
+  host machine                    relay server                    guests
  ┌──────────────┐               ┌──────────────┐            ┌──────────────┐
  │ openconsole  │               │ openconsole- │            │  browser     │
  │   CLI        │               │   server     │            │  (xterm.js)  │
- │              │               │              │            │              │
- │  shell ↔ PTY │──outbound────▶│  sessions    │◀───────────│  or ssh      │
- │  (terminal)  │   WebSocket   │  + tunnels   │ WebSocket  │              │
- └──────────────┘               └──────────────┘            └──────────────┘
+ │              │               │              │            ├──────────────┤
+ │  shell ↔ PTY │──outbound────▶│  sessions    │◀───────────│ openconsole  │
+ │  (terminal)  │   WebSocket   │  + bridges   │ WebSocket  │    join      │
+ └──────────────┘               │  + web UI    │            ├──────────────┤
+                                └──────────────┘            │  ssh (later) │
+                                                            └──────────────┘
 ```
 
 ### `cmd/openconsole` — host CLI
@@ -53,6 +55,8 @@ executes anything; it is a broker. Stateless beyond memory, and shipped as a
 | `internal/client` | Host CLI: share, join, relay API client. | ✅ |
 | `internal/tunnel` | Transport. The only package that knows WebSockets exist. | ✅ |
 | `internal/terminal` | PTY and shell handling. Produces and consumes bytes. | ✅ |
+| `internal/webui` | Serves the embedded browser client. | ✅ |
+| `web/` | Browser client sources: TypeScript, Vite, xterm.js. | ✅ |
 
 The layering rule that everything else follows from: **terminal data is never
 coupled to WebSockets.** `internal/terminal` produces and consumes byte streams,
@@ -195,6 +199,38 @@ middleware wraps `http.ResponseWriter`, and a wrapper that does not implement
 REST API working perfectly. `statusRecorder` passes `Hijack` and `Flush`
 through.
 
+## The browser client
+
+`web/` builds to `internal/webui/dist` and is embedded with `go:embed`, so the
+relay stays one file with nothing to deploy alongside it. The bundle is
+committed, so `go build ./...` produces a working UI without a Node toolchain;
+the Docker image rebuilds it from source so a container is never stale.
+
+Routes are registered explicitly — `/{$}`, `/s/{id}`, `/assets/`, and each
+root-level file in the bundle — rather than as a catch-all `GET /`. A catch-all
+sounds harmless but quietly changes API behaviour: it matches
+`GET /api/v1/sessions` and returns the UI's 404 instead of the 405 the pattern
+mux gives for a path that exists under a different method.
+
+### The capability URL
+
+A guest link is `/s/<session-id>#<guest-token>`. The token is in the fragment,
+which browsers never transmit, so the relay sees only `GET /s/<session-id>` and
+the credential never reaches an access log, a proxy log, or a `Referer` header.
+The page reads `location.hash` and sends the token in an `OPEN` frame like any
+other client. This is the one place the project puts a credential in a URL, and
+it is deliberate; see [protocol.md](protocol.md).
+
+The page is served with a strict CSP (everything is same-origin and embedded),
+`Referrer-Policy: no-referrer`, `nosniff` and `X-Frame-Options: DENY`.
+
+### Sizing
+
+The host owns its terminal's dimensions. Guests are told the size on join and
+whenever it changes, and pick a font size that makes that grid fit their window
+— they never resize someone else's real terminal. A `RESIZE` from a guest is
+ignored by the relay.
+
 ## Deployment
 
 The relay ships as a `scratch` image containing one static binary, running as
@@ -214,8 +250,8 @@ fails to connect.
 | --- | --- | --- |
 | 1 | Sessions, IDs/tokens, HTTP API, config, logging, docs. | ✅ |
 | 2 | PTY + shell, WebSocket tunnel, host↔guest streaming, terminal guest client, container image. | ✅ |
-| 3 | Browser client: Vite + TypeScript + xterm.js under `web/`. | next |
-| 4 | Native SSH access (`ssh <session>@relay`). | |
+| 3 | Browser client: Vite + TypeScript + xterm.js, embedded in the relay. | ✅ |
+| 4 | Native SSH access (`ssh <session>@relay`). | next |
 | 5 | Multiplexed channels for TCP forwarding; read-only guests. | |
 | 6 | End-to-end encryption between host and guest. | |
 
@@ -240,3 +276,10 @@ fails to connect.
 7. **No Windows host support.** Sharing needs a PTY; ConPTY is not wired up. The
    relay and the join client build and run on Windows, but `openconsole` cannot
    share a terminal there.
+8. **A guest link is a bearer capability.** Anyone who obtains the full URL has
+   the terminal. It cannot be revoked short of ending the session, and there is
+   no per-guest identity or audit trail.
+9. **The committed web bundle can go stale.** `internal/webui/dist` is generated
+   but checked in so `go build` needs no Node. Nothing yet fails a build when it
+   is older than `web/src`; the Docker image sidesteps this by rebuilding, but a
+   CI check would be better.

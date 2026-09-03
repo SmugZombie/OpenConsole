@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 220" role="img" aria-label="OpenConsole">
+  <rect x="8" y="14" width="192" height="192" rx="42" fill="#12141a"/>
+  <path d="M44 68 L86 110 L44 152" fill="none" stroke="#e8a54b" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="96" y="82" width="16" height="56" rx="3" fill="#e8a54b"/>
+  <path d="M164 68 L122 110 L164 152" fill="none" stroke="#e8a54b" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="228" y="136" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="72" font-weight="650" letter-spacing="-1.5">
+    <tspan fill="#6b6560">Open</tspan><tspan fill="#12141a">Console</tspan>
+  </text>
+</svg>

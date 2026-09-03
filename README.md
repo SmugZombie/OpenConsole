@@ -19,7 +19,11 @@ openconsole: sharing this terminal
   session:  x5s5gzxptgfksy3hu75jmcoltm
   expires:  in 30m
 
-  to join:  openconsole join x5s5gzxptgfksy3hu75jmcoltm.3u2avt7nibb2oxbz…
+  in a browser:
+    https://console.example.com/s/x5s5gzxptgfksy3hu75jmcoltm#3u2avt7nibb2oxbz…
+
+  in a terminal:
+    openconsole join x5s5gzxptgfksy3hu75jmcoltm.3u2avt7nibb2oxbz…
 
   The ticket grants full control of this terminal. Send it privately,
   and type 'exit' here to end the session.
@@ -27,19 +31,24 @@ openconsole: sharing this terminal
 $ ▏
 ```
 
-> **Status: Phase 2.** Terminal sharing works end to end between two terminals.
-> The browser client, SSH access and TCP forwarding are not built yet. Session
+Send the link, and they are in your terminal — no client to install, nothing to
+sign up for.
+
+> **Status: Phase 3.** Terminal sharing works end to end, from another terminal
+> or a browser. SSH access and TCP forwarding are not built yet. Session
 > creation is unauthenticated, so run your relay on a trusted network or behind
 > an authenticating proxy. See [the roadmap](docs/architecture.md#roadmap).
 
 ## How it works
 
 ```
-  host machine                    relay server                    guest
+  host machine                    relay server                    guests
  ┌──────────────┐               ┌──────────────┐            ┌──────────────┐
- │ openconsole  │──outbound────▶│  sessions    │◀───────────│ openconsole  │
- │  shell + PTY │   WebSocket   │  + bridges   │ WebSocket  │     join     │
- └──────────────┘               └──────────────┘            └──────────────┘
+ │ openconsole  │──outbound────▶│  sessions    │◀───────────│   browser    │
+ │  shell + PTY │   WebSocket   │  + bridges   │ WebSocket  │      or      │
+ └──────────────┘               │  + web UI    │            │ openconsole  │
+                                └──────────────┘            │     join     │
+                                                            └──────────────┘
 ```
 
 Neither end needs to be reachable from the internet — both dial out. The relay
@@ -51,6 +60,8 @@ number of guests.
 - Go 1.23 or newer
 - macOS or Linux to *share* a terminal (it needs a PTY). The relay and the join
   client also run on Windows.
+- Node 20+ only if you want to change the browser client. The built bundle is
+  committed, so `go build` alone produces a relay with a working UI.
 
 Four dependencies, all of them small: `coder/websocket`, `creack/pty`,
 `golang.org/x/term`, and `golang.org/x/sys`.
@@ -81,11 +92,13 @@ It prints a ticket. Copy it.
 
 **3 — join**
 
+Open the printed link in a browser, or from another terminal:
+
 ```sh
 ./bin/openconsole join <ticket>
 ```
 
-Both terminals are now the same shell. Type in either. Press **Ctrl-]** to
+Both are now the same shell. Type in either. Press **Ctrl-]** to
 detach as a guest; type `exit` as the host to end the session for everyone.
 
 Pointing at a relay somewhere else:
@@ -142,6 +155,8 @@ curl -s localhost:8080/api/v1/sessions/x5s5…
 | `POST` | `/api/v1/sessions` | Create a session — the only response with tokens |
 | `GET` | `/api/v1/sessions/{id}` | Public metadata, no credentials |
 | `GET` | `/api/v1/tunnel` | WebSocket upgrade for host and guest alike |
+| `GET` | `/` | Browser client: paste a ticket to join |
+| `GET` | `/s/{id}` | Browser terminal; the token comes from the URL fragment |
 
 `host_token` and `guest_token` are shown once and never repeated by another
 endpoint or written to a log. Unknown, malformed and expired IDs all answer an
@@ -201,9 +216,24 @@ internal/tunnel/          transport; the only package that knows WebSockets
 internal/terminal/        PTY and shell handling
 internal/server/          HTTP API, tunnel endpoint, config, lifecycle
 internal/client/          CLI: share, join, relay API client
+internal/webui/           embeds and serves the built browser client
+web/                      browser client sources (TypeScript, Vite, xterm.js)
+brand/                    logo, icons, social image
 deploy/                   compose file and proxy configuration
 docs/                     architecture.md, protocol.md
 ```
+
+### Browser client
+
+```sh
+npm --prefix web install
+npm --prefix web run build   # bundles into internal/webui/dist
+npm --prefix web test
+```
+
+`internal/webui/dist` is generated but committed, so a Go-only checkout builds a
+working UI. Rebuild and commit it alongside any change under `web/src`. See
+[web/README.md](web/README.md).
 
 ## Design notes
 
@@ -226,6 +256,10 @@ docs/                     architecture.md, protocol.md
 - **Nobody's terminal freezes for someone else.** A guest that falls behind is
   disconnected rather than allowed to apply backpressure; if the relay stops
   keeping up, the host stops sharing and the local shell carries on.
+- **The browser link is a capability URL, by design.** The token sits in the
+  fragment (`/s/<id>#<token>`), which browsers never transmit — so the relay
+  sees only the session path, and the credential stays out of access logs and
+  `Referer` headers while surviving a copy-paste.
 
 ## Security
 
@@ -234,7 +268,9 @@ Not yet suitable for exposure to the public internet:
 - Session creation is unauthenticated and unrate-limited.
 - The relay sees plaintext terminal traffic — it can read and inject keystrokes.
   End-to-end encryption is roadmap, so "self-hosted" is doing real work here.
-- Anyone holding a ticket has full write access; read-only guests are roadmap.
+- Anyone holding a ticket or link has full write access; read-only guests are
+  roadmap. A link is a bearer capability and cannot be revoked short of ending
+  the session.
 - TLS is assumed to be terminated by a proxy in front of the relay.
 
 The full list is in

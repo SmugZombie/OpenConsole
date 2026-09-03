@@ -1,0 +1,13 @@
+{
+  "name": "OpenConsole",
+  "short_name": "OpenConsole",
+  "description": "Share a terminal. No inbound ports.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12141a",
+  "theme_color": "#12141a",
+  "icons": [
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

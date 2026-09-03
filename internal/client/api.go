@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -97,3 +98,14 @@ func relayError(status int, body []byte) error {
 
 // TunnelURL is the WebSocket endpoint for this relay.
 func (c *Client) TunnelURL() string { return c.baseURL + "/api/v1/tunnel" }
+
+// JoinURL is the page a guest opens in a browser.
+//
+// The token goes in the URL *fragment*. Browsers never send a fragment to a
+// server, so the credential stays out of the relay's access log, out of any
+// proxy in between, and out of Referer headers — while still surviving a
+// copy-paste of the whole link. That is what makes this a deliberate
+// capability URL rather than a secret leaked into a URL.
+func (c *Client) JoinURL(sessionID, guestToken string) string {
+	return c.baseURL + "/s/" + url.PathEscape(sessionID) + "#" + url.PathEscape(guestToken)
+}

@@ -71,7 +71,7 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 	}
 	defer conn.Close("host exited")
 
-	printBanner(stderr, cfg, sess)
+	printBanner(stderr, cfg, sess, api.JoinURL(sess.SessionID, sess.GuestToken))
 
 	restore, err := rawTerminal(stdin)
 	if err != nil {

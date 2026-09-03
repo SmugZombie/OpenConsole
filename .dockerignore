@@ -7,8 +7,12 @@
 bin/
 dist/
 docs/
-web/
 deploy/
+brand/
 README.md
 Dockerfile
-*.md
+
+# The image rebuilds the browser bundle from web/ in its own stage, so the
+# committed copy would only be overwritten.
+internal/webui/dist/
+web/node_modules/

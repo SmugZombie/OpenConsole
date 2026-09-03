@@ -11,16 +11,17 @@ import (
 //
 // It goes to stderr so that redirecting the shared shell's output does not
 // capture, and thereby log, the ticket.
-func printBanner(w io.Writer, cfg Config, sess *Session) {
+func printBanner(w io.Writer, cfg Config, sess *Session, joinURL string) {
 	ticket := Ticket(sess.SessionID, sess.GuestToken)
 
 	fmt.Fprintf(w, "\nopenconsole: sharing this terminal\n")
 	fmt.Fprintf(w, "  relay:    %s\n", cfg.Server)
 	fmt.Fprintf(w, "  session:  %s\n", sess.SessionID)
 	fmt.Fprintf(w, "  expires:  %s\n", humanDuration(time.Until(sess.ExpiresAt)))
-	fmt.Fprintf(w, "\n  to join:  openconsole join %s\n", ticket)
+	fmt.Fprintf(w, "\n  in a browser:\n    %s\n", joinURL)
+	fmt.Fprintf(w, "\n  in a terminal:\n    openconsole join %s\n", ticket)
 	if cfg.Server != DefaultServer {
-		fmt.Fprintf(w, "            (with -server %s, or OPENCONSOLE_SERVER)\n", cfg.Server)
+		fmt.Fprintf(w, "      (with -server %s, or OPENCONSOLE_SERVER)\n", cfg.Server)
 	}
 	fmt.Fprintf(w, "\n  The ticket grants full control of this terminal. Send it privately,\n")
 	fmt.Fprintf(w, "  and type 'exit' here to end the session.\n\n")

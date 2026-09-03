@@ -3,9 +3,11 @@
 The protocol carries terminal traffic and control messages between a host CLI,
 the relay, and a guest.
 
-**Status:** implemented as of Phase 2. `internal/protocol` defines the frames and
-their encodings; `internal/tunnel` carries them over WebSockets. Multiplexed
-channels and end-to-end encryption remain future work.
+**Status:** implemented. `internal/protocol` defines the frames and their
+encodings and `internal/tunnel` carries them over WebSockets; `web/src/protocol.ts`
+and `web/src/tunnel.ts` are the browser's mirror of the same two files, and the
+pairs must be changed together. Multiplexed channels and end-to-end encryption
+remain future work.
 
 ## Design decisions
 
@@ -64,6 +66,22 @@ up in server access logs, browser history, and `Referer` headers.
 This is why there is one tunnel endpoint, `/api/v1/tunnel`, rather than a path
 per session: the URL is identical for every connection and reveals nothing. The
 relay's own access log records the path and status, never the credential.
+
+The browser is the one place a token has to travel *in* a URL, because a link is
+the only thing you can send someone. It goes in the **fragment**:
+
+```
+https://console.example.com/s/<session-id>#<guest-token>
+                            └── path ───┘ └── never sent ──┘
+```
+
+A fragment is not transmitted in an HTTP request. The relay sees only
+`GET /s/<session-id>`, so the credential stays out of its access log, out of any
+proxy in between, and out of `Referer` headers — while still surviving a
+copy-paste of the whole link. The page reads `location.hash` and puts the token
+in an `OPEN` frame like every other client. That is what makes this a designed
+capability URL rather than a secret leaked into a URL, and it is the property to
+protect if the routing ever changes.
 
 ## Message types
 

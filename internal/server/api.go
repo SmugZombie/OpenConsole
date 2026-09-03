@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SmugZombie/OpenConsole/internal/session"
+	"github.com/SmugZombie/OpenConsole/internal/webui"
 )
 
 // maxRequestBody caps request bodies. The API takes no meaningful input yet,
@@ -103,6 +104,11 @@ func (a *API) Routes() http.Handler {
 	// which. Putting the session in the path would leak it into access logs
 	// for no benefit.
 	mux.HandleFunc("GET /api/v1/tunnel", a.handleTunnel)
+
+	// The browser client registers its own explicit routes; see webui.Register
+	// for why it is not mounted as a catch-all.
+	webui.Register(mux)
+
 	return a.withRecovery(a.withLogging(mux))
 }
 

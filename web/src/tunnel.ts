@@ -1,0 +1,233 @@
+/**
+ * The browser end of an OpenConsole tunnel.
+ *
+ * Everything transport-specific lives here, the same way `internal/tunnel`
+ * isolates it on the Go side: the UI in main.ts deals in terminal bytes and
+ * connection states, never in WebSocket frames.
+ */
+
+import {
+  PROTOCOL_VERSION,
+  ProtocolError,
+  decodeBinary,
+  decodeControl,
+  encodeControl,
+  encodeData,
+  type ClosePayload,
+  type ErrorPayload,
+  type Frame,
+  type ResizePayload,
+} from './protocol';
+
+export type Status =
+  | 'connecting'
+  | 'connected'
+  | 'closed'
+  | 'error';
+
+export interface TunnelHandlers {
+  /** Terminal output arrived. */
+  onData(bytes: Uint8Array): void;
+  /** The host's terminal changed size. */
+  onResize(size: ResizePayload): void;
+  /** Connection state changed; `detail` is a human-readable reason. */
+  onStatus(status: Status, detail?: string): void;
+}
+
+/** How a session ended, so the UI can say something useful. */
+export interface Ending {
+  reason: string;
+  /** True when the host ended the session normally, rather than a failure. */
+  graceful: boolean;
+}
+
+export interface TunnelOptions {
+  sessionId: string;
+  token: string;
+  cols: number;
+  rows: number;
+  handlers: TunnelHandlers;
+}
+
+/** Maps the relay's error codes onto something worth reading. */
+function describeError(e: ErrorPayload): string {
+  switch (e.code) {
+    case 'unauthorized':
+      return 'This link is not valid, or the session has expired.';
+    case 'session_not_found':
+      return 'No live terminal here — the host may have disconnected.';
+    case 'unsupported_version':
+      return 'This page speaks a different protocol version than the relay. Try a reload.';
+    case 'protocol_error':
+      return `The relay rejected the connection${e.message ? `: ${e.message}` : '.'}`;
+    default:
+      return e.message || e.code || 'The relay refused the connection.';
+  }
+}
+
+/** Builds the tunnel URL from the page's own origin. */
+export function tunnelURL(): string {
+  const url = new URL('/api/v1/tunnel', window.location.href);
+  // A page served over https must not open an insecure ws:// tunnel; browsers
+  // block it as mixed content anyway, but failing loudly here is clearer.
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
+
+export class Tunnel {
+  private ws: WebSocket | null = null;
+  private readonly opts: TunnelOptions;
+  private opened = false;
+  private ending: Ending | null = null;
+
+  constructor(opts: TunnelOptions) {
+    this.opts = opts;
+  }
+
+  /** How the session ended, once it has. */
+  get endedWith(): Ending | null {
+    return this.ending;
+  }
+
+  connect(): void {
+    const { handlers } = this.opts;
+    handlers.onStatus('connecting');
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(tunnelURL());
+    } catch (err) {
+      this.fail(`Could not open a connection: ${String(err)}`);
+      return;
+    }
+    ws.binaryType = 'arraybuffer';
+    this.ws = ws;
+
+    ws.onopen = () => {
+      // The credential goes in the OPEN frame, never the URL, so it stays out
+      // of access logs and browser history.
+      this.send(
+        encodeControl('OPEN', {
+          version: PROTOCOL_VERSION,
+          session_id: this.opts.sessionId,
+          role: 'guest',
+          token: this.opts.token,
+          cols: this.opts.cols,
+          rows: this.opts.rows,
+        }),
+      );
+    };
+
+    ws.onmessage = (ev: MessageEvent) => {
+      try {
+        this.handle(
+          typeof ev.data === 'string'
+            ? decodeControl(ev.data)
+            : decodeBinary(ev.data as ArrayBuffer),
+        );
+      } catch (err) {
+        if (err instanceof ProtocolError) {
+          this.fail(`Protocol error: ${err.message}`);
+        } else {
+          this.fail(String(err));
+        }
+      }
+    };
+
+    ws.onerror = () => {
+      // The browser deliberately withholds the reason for a WebSocket failure,
+      // so there is nothing more specific to report than the fact of it.
+      if (!this.ending) this.fail('Connection failed.');
+    };
+
+    ws.onclose = () => {
+      if (this.ending) {
+        this.opts.handlers.onStatus(
+          this.ending.graceful ? 'closed' : 'error',
+          this.ending.reason,
+        );
+        return;
+      }
+      if (!this.opened) {
+        this.fail('The relay closed the connection before the session started.');
+        return;
+      }
+      this.ending = { reason: 'The connection was lost.', graceful: false };
+      this.opts.handlers.onStatus('error', this.ending.reason);
+    };
+  }
+
+  private handle(frame: Frame): void {
+    const { handlers } = this.opts;
+
+    switch (frame.type) {
+      case 'OPEN':
+        // The relay acknowledges with OPEN only once the connection is
+        // genuinely attached to a live terminal, so this is the point at which
+        // there is something to show.
+        this.opened = true;
+        handlers.onStatus('connected');
+        break;
+
+      case 'DATA':
+        handlers.onData(frame.payload as Uint8Array);
+        break;
+
+      case 'RESIZE': {
+        const size = frame.payload as ResizePayload;
+        if (typeof size?.cols === 'number' && typeof size?.rows === 'number') {
+          handlers.onResize(size);
+        }
+        break;
+      }
+
+      case 'PING':
+        this.send(encodeControl('PONG'));
+        break;
+
+      case 'PONG':
+        break;
+
+      case 'CLOSE': {
+        const c = (frame.payload ?? {}) as ClosePayload;
+        this.ending = {
+          reason: c.reason ? `Session ended: ${c.reason}.` : 'The host ended the session.',
+          graceful: true,
+        };
+        this.close();
+        break;
+      }
+
+      case 'ERROR': {
+        const e = (frame.payload ?? {}) as ErrorPayload;
+        this.fail(describeError(e));
+        break;
+      }
+    }
+  }
+
+  /** Sends a keystroke, or anything else the user typed, to the terminal. */
+  write(bytes: Uint8Array): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.send(encodeData(bytes));
+    }
+  }
+
+  private send(payload: string | Uint8Array): void {
+    this.ws?.send(payload);
+  }
+
+  private fail(reason: string): void {
+    if (!this.ending) this.ending = { reason, graceful: false };
+    this.opts.handlers.onStatus('error', reason);
+    this.close();
+  }
+
+  close(): void {
+    const ws = this.ws;
+    this.ws = null;
+    if (ws && ws.readyState <= WebSocket.OPEN) {
+      ws.close(1000, 'closed by client');
+    }
+  }
+}
