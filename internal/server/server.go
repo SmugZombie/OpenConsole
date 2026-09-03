@@ -18,8 +18,15 @@ type Server struct {
 	cfg      Config
 	log      *slog.Logger
 	sessions *session.Manager
+	bridges  *session.Bridges
 	http     *http.Server
 	ln       net.Listener
+
+	// baseCtx bounds every live tunnel. WebSocket connections are hijacked,
+	// so http.Server.Shutdown does not wait for them or close them; cancelling
+	// this is what actually ends them.
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
 }
 
 // New builds a Server and binds its listener immediately, so a port conflict
@@ -33,25 +40,35 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 	}
 
 	sessions := session.NewManager(session.Options{TTL: cfg.SessionTTL})
-	api := NewAPI(sessions, log, version)
+	bridges := session.NewBridges(log)
+
+	baseCtx, baseCancel := context.WithCancel(context.Background())
+	api := NewAPI(sessions, bridges, log, version, baseCtx)
 
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
+		baseCancel()
 		return nil, fmt.Errorf("listen on %s: %w", cfg.ListenAddr, err)
 	}
 
 	return &Server{
-		cfg:      cfg,
-		log:      log,
-		sessions: sessions,
-		ln:       ln,
+		cfg:        cfg,
+		log:        log,
+		sessions:   sessions,
+		bridges:    bridges,
+		ln:         ln,
+		baseCtx:    baseCtx,
+		baseCancel: baseCancel,
 		http: &http.Server{
 			Handler:           api.Routes(),
 			ReadHeaderTimeout: DefaultReadHeaderTimeout,
-			ReadTimeout:       DefaultReadTimeout,
-			WriteTimeout:      DefaultWriteTimeout,
 			IdleTimeout:       DefaultIdleTimeout,
 			ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+			// ReadTimeout and WriteTimeout are deliberately unset. They are
+			// whole-connection deadlines, and a tunnel carrying an idle
+			// terminal would trip them and drop a working session. Slow-client
+			// protection comes from ReadHeaderTimeout above, the request body
+			// cap in the API, and protocol-level PING/PONG on tunnels.
 		},
 	}, nil
 }
@@ -95,6 +112,12 @@ func (s *Server) Run(ctx context.Context) error {
 	defer cancel()
 
 	err := s.http.Shutdown(shutdownCtx)
+
+	// Shutdown does not touch hijacked WebSocket connections, so tunnels are
+	// closed explicitly: tell peers first, then cancel the context their
+	// goroutines are parked on.
+	s.bridges.CloseAll("relay shutting down")
+	s.baseCancel()
 	stopSweeper()
 	s.sessions.Close()
 	if err != nil {

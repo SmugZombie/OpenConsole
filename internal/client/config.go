@@ -24,6 +24,11 @@ const EnvServer = "OPENCONSOLE_SERVER"
 type Config struct {
 	// Server is the base URL of the relay, e.g. https://console.example.com.
 	Server string
+	// Shell overrides the program to run. Empty means $SHELL.
+	//
+	// This is a local flag on purpose. The shell is chosen by the person at
+	// the keyboard; taking it from the relay would be remote code execution.
+	Shell string
 	// ShowVersion requests version output instead of starting a session.
 	ShowVersion bool
 }
@@ -40,12 +45,16 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	fs := flag.NewFlagSet("openconsole", flag.ContinueOnError)
 	fs.SetOutput(output)
 	fs.StringVar(&cfg.Server, "server", cfg.Server, "relay base URL (env "+EnvServer+")")
+	fs.StringVar(&cfg.Shell, "shell", cfg.Shell, "shell to run (default $SHELL)")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintf(output, "openconsole - share a terminal through an OpenConsole relay\n\n")
-		fmt.Fprintf(output, "Usage:\n  openconsole [flags]\n\nFlags:\n")
+		fmt.Fprintf(output, "Usage:\n")
+		fmt.Fprintf(output, "  openconsole [flags]                 share this terminal\n")
+		fmt.Fprintf(output, "  openconsole join <ticket> [flags]   join a shared terminal\n")
+		fmt.Fprintf(output, "  openconsole version                 print version\n")
+		fmt.Fprintf(output, "\nFlags:\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(output, "\nTerminal sharing is not implemented yet; see docs/architecture.md.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err

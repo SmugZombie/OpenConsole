@@ -1,9 +1,13 @@
 package server
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -20,6 +24,8 @@ type healthResponse struct {
 	Status   string `json:"status"`
 	Version  string `json:"version"`
 	Sessions int    `json:"sessions"`
+	// Tunnels counts sessions with a host terminal currently connected.
+	Tunnels int `json:"tunnels"`
 }
 
 // createSessionResponse is returned once, to the creator, and is the only
@@ -47,20 +53,40 @@ type errorResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
-// API wires the session manager to HTTP handlers.
+// API wires the session manager and live bridges to HTTP handlers.
 type API struct {
 	sessions *session.Manager
+	bridges  *session.Bridges
 	log      *slog.Logger
 	version  string
 	now      func() time.Time
+
+	// baseCtx bounds tunnel connections. A tunnel outlives the HTTP handler
+	// that created it, so it cannot use the request context; it needs one tied
+	// to the server's lifetime so shutdown can end every tunnel.
+	baseCtx context.Context
 }
 
-// NewAPI returns an API. A nil logger is replaced with the default logger.
-func NewAPI(sessions *session.Manager, log *slog.Logger, version string) *API {
+// NewAPI returns an API. A nil logger is replaced with the default logger, and
+// a nil context with context.Background.
+func NewAPI(sessions *session.Manager, bridges *session.Bridges, log *slog.Logger, version string, baseCtx context.Context) *API {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &API{sessions: sessions, log: log, version: version, now: time.Now}
+	if bridges == nil {
+		bridges = session.NewBridges(log)
+	}
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	return &API{
+		sessions: sessions,
+		bridges:  bridges,
+		log:      log,
+		version:  version,
+		now:      time.Now,
+		baseCtx:  baseCtx,
+	}
 }
 
 // Routes builds the HTTP handler for the relay API.
@@ -73,6 +99,10 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /health", a.handleHealth)
 	mux.HandleFunc("POST /api/v1/sessions", a.handleCreateSession)
 	mux.HandleFunc("GET /api/v1/sessions/{id}", a.handleGetSession)
+	// Both roles share one tunnel endpoint; the OPEN frame says which is
+	// which. Putting the session in the path would leak it into access logs
+	// for no benefit.
+	mux.HandleFunc("GET /api/v1/tunnel", a.handleTunnel)
 	return a.withRecovery(a.withLogging(mux))
 }
 
@@ -81,6 +111,7 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Status:   "ok",
 		Version:  a.version,
 		Sessions: a.sessions.Len(),
+		Tunnels:  a.bridges.Len(),
 	})
 }
 
@@ -185,6 +216,27 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.wroteHeader = true
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack passes through to the underlying ResponseWriter.
+//
+// Without this the wrapper would hide http.Hijacker, and every WebSocket
+// upgrade would fail with 501 while the REST API kept working perfectly — a
+// failure that only shows up when a terminal tries to connect.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("server: %T does not support hijacking", s.ResponseWriter)
+	}
+	s.status = http.StatusSwitchingProtocols
+	return h.Hijack()
+}
+
+// Flush passes through so streaming responses are not buffered by the wrapper.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // remoteHost strips the port from a RemoteAddr, keeping logs stable per client.

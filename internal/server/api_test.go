@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -18,7 +19,7 @@ func testAPI(t *testing.T, ttl time.Duration) (*API, http.Handler) {
 	m := session.NewManager(session.Options{TTL: ttl})
 	t.Cleanup(m.Close)
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	api := NewAPI(m, log, "test")
+	api := NewAPI(m, nil, log, "test", context.Background())
 	return api, api.Routes()
 }
 
@@ -114,7 +115,7 @@ func TestGetExpiredSessionIsNotFound(t *testing.T) {
 	// A TTL this short expires between the create and the lookup.
 	m := session.NewManager(session.Options{TTL: time.Nanosecond})
 	t.Cleanup(m.Close)
-	api := NewAPI(m, slog.New(slog.NewJSONHandler(io.Discard, nil)), "test")
+	api := NewAPI(m, nil, slog.New(slog.NewJSONHandler(io.Discard, nil)), "test", context.Background())
 	h := api.Routes()
 
 	rec := httptest.NewRecorder()

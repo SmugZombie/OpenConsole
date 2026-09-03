@@ -38,6 +38,10 @@ type Config struct {
 	SessionTTL      time.Duration
 	LogLevel        string
 	ShutdownTimeout time.Duration
+
+	// RunHealthCheck makes the process probe a running relay and exit,
+	// instead of serving. It backs the container HEALTHCHECK.
+	RunHealthCheck bool
 }
 
 // DefaultConfig returns the configuration used when nothing is overridden.
@@ -84,6 +88,7 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "address to listen on (env "+EnvListenAddr+")")
 	ttl := fs.String("session-ttl", cfg.SessionTTL.String(), "session lifetime, e.g. 30m (env "+EnvSessionTTL+")")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level: debug, info, warn, error (env "+EnvLogLevel+")")
+	fs.BoolVar(&cfg.RunHealthCheck, "healthcheck", false, "probe a running relay's /health and exit (for container HEALTHCHECK)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}

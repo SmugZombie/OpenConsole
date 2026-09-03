@@ -1,0 +1,56 @@
+# Minimal self-hosted OpenConsole relay.
+#
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# This exposes plain HTTP on 8080. That is fine on a private network or behind
+# a reverse proxy that terminates TLS; do not expose it directly to the
+# internet. Session tokens are bearer credentials and travel in the clear
+# without TLS. See deploy/README.md.
+
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${OPENCONSOLE_VERSION:-dev}
+    image: openconsole-server:${OPENCONSOLE_VERSION:-dev}
+    restart: unless-stopped
+
+    ports:
+      - "${OPENCONSOLE_PORT:-8080}:8080"
+
+    environment:
+      OPENCONSOLE_LISTEN_ADDR: ":8080"
+      OPENCONSOLE_SESSION_TTL: "${OPENCONSOLE_SESSION_TTL:-30m}"
+      OPENCONSOLE_LOG_LEVEL: "${OPENCONSOLE_LOG_LEVEL:-info}"
+
+    # The relay holds sessions in memory and writes nothing to disk, so the
+    # filesystem can be read-only and every privilege dropped.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    # A session is a goroutine and a scrollback buffer, not much else. The cap
+    # is here so an unauthenticated session-creation flood degrades this
+    # container rather than the host.
+    mem_limit: 256m
+    pids_limit: 512
+
+    # Graceful shutdown drains in-flight requests and closes tunnels with a
+    # CLOSE frame; give it more than Docker's default 10s.
+    stop_grace_period: 20s
+
+    healthcheck:
+      test: ["CMD", "/openconsole-server", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 2s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

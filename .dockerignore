@@ -1,0 +1,14 @@
+# Keep the build context to source only: a smaller context is a faster build,
+# and nothing here should ever be baked into an image.
+.git
+.gitignore
+.dockerignore
+.idea
+bin/
+dist/
+docs/
+web/
+deploy/
+README.md
+Dockerfile
+*.md

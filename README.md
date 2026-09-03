@@ -7,104 +7,145 @@ OpenConsole is an open-source, self-hostable take on the idea behind the
 discontinued [Teleconsole](https://github.com/gravitational/teleconsole). It is a
 new implementation, not a fork.
 
-The host runs one command. It dials **out** to a relay you control, and prints a
-temporary link. Someone else opens that link and shares the terminal. When the
-host exits, the session is gone.
+You run one command. It dials **out** to a relay you control and prints a
+ticket. You send the ticket to someone; they run one command and are in your
+terminal. When you exit, the session is gone.
 
-> **Status: Phase 1 — early scaffolding.**
-> Session management and the relay's HTTP API work today. There is no terminal
-> sharing yet: no PTY, no WebSocket tunnel, no browser UI. See
-> [the roadmap](docs/architecture.md#roadmap).
+```
+$ openconsole
 
-## How it will work
+openconsole: sharing this terminal
+  relay:    https://console.example.com
+  session:  x5s5gzxptgfksy3hu75jmcoltm
+  expires:  in 30m
+
+  to join:  openconsole join x5s5gzxptgfksy3hu75jmcoltm.3u2avt7nibb2oxbz…
+
+  The ticket grants full control of this terminal. Send it privately,
+  and type 'exit' here to end the session.
+
+$ ▏
+```
+
+> **Status: Phase 2.** Terminal sharing works end to end between two terminals.
+> The browser client, SSH access and TCP forwarding are not built yet. Session
+> creation is unauthenticated, so run your relay on a trusted network or behind
+> an authenticating proxy. See [the roadmap](docs/architecture.md#roadmap).
+
+## How it works
 
 ```
   host machine                    relay server                    guest
  ┌──────────────┐               ┌──────────────┐            ┌──────────────┐
- │ openconsole  │──outbound────▶│  sessions    │◀───────────│  browser     │
- │  shell + PTY │   WebSocket   │  + tunnels   │ WebSocket  │  (xterm.js)  │
+ │ openconsole  │──outbound────▶│  sessions    │◀───────────│ openconsole  │
+ │  shell + PTY │   WebSocket   │  + bridges   │ WebSocket  │     join     │
  └──────────────┘               └──────────────┘            └──────────────┘
 ```
 
-Neither end needs to be reachable from the internet. The relay never executes
-anything — it only brokers bytes.
+Neither end needs to be reachable from the internet — both dial out. The relay
+never executes anything; it brokers bytes between one host terminal and any
+number of guests.
 
 ## Requirements
 
-- Go 1.22 or newer (`go1.22` is the module's minimum; developed on 1.27)
-- No other dependencies. The module has zero third-party requirements.
+- Go 1.23 or newer
+- macOS or Linux to *share* a terminal (it needs a PTY). The relay and the join
+  client also run on Windows.
+
+Four dependencies, all of them small: `coder/websocket`, `creack/pty`,
+`golang.org/x/term`, and `golang.org/x/sys`.
 
 ## Quick start
+
+Three terminals, all on one machine:
 
 ```sh
 git clone https://github.com/SmugZombie/OpenConsole.git
 cd OpenConsole
-go build ./...
+go build -o bin/ ./cmd/...
 ```
 
-### Run the relay
+**1 — run a relay**
 
 ```sh
-go run ./cmd/openconsole-server
+./bin/openconsole-server
 ```
 
-```
-{"time":"...","level":"INFO","msg":"relay listening","addr":"[::]:8080","session_ttl":"30m0s"}
-```
-
-Or build a binary:
+**2 — share a terminal**
 
 ```sh
-go build -o bin/openconsole-server ./cmd/openconsole-server
-./bin/openconsole-server -listen 127.0.0.1:8080 -session-ttl 15m -log-level debug
+./bin/openconsole
 ```
 
-### Run the CLI
+It prints a ticket. Copy it.
+
+**3 — join**
 
 ```sh
-go run ./cmd/openconsole
-go run ./cmd/openconsole -h
-go run ./cmd/openconsole -version
+./bin/openconsole join <ticket>
 ```
 
-Phase 1 prints its version and the relay it would use. Terminal sharing is not
-wired up yet.
+Both terminals are now the same shell. Type in either. Press **Ctrl-]** to
+detach as a guest; type `exit` as the host to end the session for everyone.
 
-## Try the API
-
-With the relay running on `:8080`:
+Pointing at a relay somewhere else:
 
 ```sh
-# Health
+openconsole -server https://console.example.com
+openconsole join <ticket> -server https://console.example.com
+# or: export OPENCONSOLE_SERVER=https://console.example.com
+```
+
+## Running a relay with Docker
+
+```sh
+docker build -t openconsole-server .
+docker run --rm -p 8080:8080 openconsole-server
+```
+
+Or with compose:
+
+```sh
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+The image is `scratch` plus one static binary — about 10 MB, running as uid
+65532, with no shell and a read-only root filesystem. Its `HEALTHCHECK` calls
+the binary's own `-healthcheck` flag, so nothing extra is baked in to support
+it.
+
+**Behind a proxy**, two things matter: forward WebSocket `Upgrade` headers on
+`/api/v1/tunnel`, and do not set a short read timeout on it — an idle terminal
+sends nothing for minutes at a time. A proxy that strips `Upgrade` lets the REST
+API work perfectly while every terminal silently fails to connect. Worked Caddy
+and nginx configs are in [deploy/README.md](deploy/README.md).
+
+## The API
+
+The relay's REST surface, if you want to drive it yourself:
+
+```sh
 curl -s localhost:8080/health
+# {"status":"ok","version":"dev","sessions":0,"tunnels":0}
 
-# Create a session — this is the ONLY response that contains tokens
 curl -s -X POST localhost:8080/api/v1/sessions
+# {"session_id":"x5s5…","host_token":"…","guest_token":"…",
+#  "created_at":"…","expires_at":"…","expires_in_seconds":1800}
 
-# Look it up (no credentials in this response)
-ID=$(curl -s -X POST localhost:8080/api/v1/sessions | \
-     python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')
-curl -s localhost:8080/api/v1/sessions/$ID
-
-# Unknown, malformed and expired IDs all answer the same 404
-curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/v1/sessions/nope
+curl -s localhost:8080/api/v1/sessions/x5s5…
+# {"session_id":"x5s5…","created_at":"…","expires_at":"…","expires_in_seconds":1799}
 ```
 
-`POST /api/v1/sessions` responds:
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness, version, session and tunnel counts |
+| `POST` | `/api/v1/sessions` | Create a session — the only response with tokens |
+| `GET` | `/api/v1/sessions/{id}` | Public metadata, no credentials |
+| `GET` | `/api/v1/tunnel` | WebSocket upgrade for host and guest alike |
 
-```json
-{
-  "session_id": "yrkw3xkrbtqsuu4jbxjqquefpu",
-  "host_token": "…",
-  "guest_token": "…",
-  "created_at": "2026-09-03T18:00:00Z",
-  "expires_at": "2026-09-03T18:30:00Z",
-  "expires_in_seconds": 1800
-}
-```
-
-Treat `host_token` and `guest_token` as secrets — they are shown once, and no
-other endpoint or log line will ever repeat them.
+`host_token` and `guest_token` are shown once and never repeated by another
+endpoint or written to a log. Unknown, malformed and expired IDs all answer an
+identical 404.
 
 ## Configuration
 
@@ -115,8 +156,9 @@ Precedence is **defaults → environment → flags**.
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
 | `-listen` | `OPENCONSOLE_LISTEN_ADDR` | `:8080` | Listen address |
-| `-session-ttl` | `OPENCONSOLE_SESSION_TTL` | `30m` | Session lifetime |
+| `-session-ttl` | `OPENCONSOLE_SESSION_TTL` | `30m` | Lifetime of an unclaimed session |
 | `-log-level` | `OPENCONSOLE_LOG_LEVEL` | `info` | `debug`\|`info`\|`warn`\|`error` |
+| `-healthcheck` | — | — | Probe a running relay and exit |
 
 Durations are Go duration strings (`30m`, `1h30m`). A bare `30` is rejected
 rather than guessed at.
@@ -126,7 +168,12 @@ rather than guessed at.
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
 | `-server` | `OPENCONSOLE_SERVER` | `http://localhost:8080` | Relay base URL |
+| `-shell` | — | `$SHELL` | Shell to run |
 | `-version` | — | — | Print version and exit |
+| — | `OPENCONSOLE_TICKET` | — | Ticket for `join`, so it stays out of `ps` |
+
+Inside a shared shell, `OPENCONSOLE=1` and `OPENCONSOLE_SESSION` are set, so a
+prompt or script can tell it is being watched.
 
 ## Development
 
@@ -134,54 +181,64 @@ rather than guessed at.
 gofmt -l .          # must print nothing
 go vet ./...
 go test ./...
-go test -race ./... # the session manager is concurrent; keep this green
+go test -race ./... # the bridge is concurrent; keep this green
 ```
 
 Build with a version stamp:
 
 ```sh
-go build -ldflags "-X main.version=v0.1.0" -o bin/openconsole-server ./cmd/openconsole-server
-go build -ldflags "-X main.version=v0.1.0" -o bin/openconsole ./cmd/openconsole
+go build -ldflags "-X main.version=v0.2.0" -o bin/ ./cmd/...
 ```
 
 ### Layout
 
 ```
-cmd/openconsole/          host CLI (skeleton)
+cmd/openconsole/          host CLI: share and join
 cmd/openconsole-server/   relay server
-internal/protocol/        message types; imports no transport
-internal/session/         IDs, tokens, TTL, in-memory store; imports no HTTP
-internal/server/          HTTP API, config, logging, lifecycle
-internal/client/          CLI config
+internal/protocol/        frames, message types, wire encodings — no transport
+internal/session/         IDs, tokens, TTL, store, host↔guest bridge — no HTTP
+internal/tunnel/          transport; the only package that knows WebSockets
+internal/terminal/        PTY and shell handling
+internal/server/          HTTP API, tunnel endpoint, config, lifecycle
+internal/client/          CLI: share, join, relay API client
+deploy/                   compose file and proxy configuration
 docs/                     architecture.md, protocol.md
 ```
-
-`internal/tunnel/` and `internal/terminal/` are planned but not created — an
-empty package is an abstraction with nothing behind it. They arrive with their
-first real implementation.
 
 ## Design notes
 
 - **Terminal data is never coupled to WebSockets.** `internal/protocol`
-  describes frames; only the (future) tunnel package will know a transport.
-  See [docs/protocol.md](docs/protocol.md).
-- **Terminal bytes stay binary.** `DATA` frames are raw — no JSON, no base64.
-  Control messages are JSON, where being self-describing is worth more than the
-  bytes.
+  describes frames; only `internal/tunnel` imports a WebSocket library. The
+  session bridge goes further and declares its own `Stream` interface, so
+  session management imports no transport at all and its fan-out is tested
+  against an in-memory pipe.
+- **Terminal bytes stay binary.** `DATA` frames are raw — no JSON, no base64,
+  which would cost ~33% on every keystroke. Control messages are JSON and
+  self-describing, so a packet capture is readable.
 - **Public identifiers are separate from credentials.** `session_id` is safe to
-  log and print; `host_token`/`guest_token` are not, and nothing in the codebase
-  logs them.
-- **All identifiers come from `crypto/rand`.** 128 bits for session IDs, 256 for
-  tokens. `math/rand` is never used.
-- **Zero dependencies.** Routing is the Go 1.22 `net/http` pattern mux; logging
-  is `log/slog`.
+  log and print; the tokens are not, and nothing logs them. Credentials travel
+  in the `OPEN` frame rather than a URL, so they stay out of access logs,
+  browser history and `Referer` headers. That is why there is one tunnel
+  endpoint instead of a path per session.
+- **All identifiers come from `crypto/rand`** — 128 bits for session IDs, 256
+  for tokens, compared with `subtle.ConstantTimeCompare`. `math/rand` is never
+  used.
+- **Nobody's terminal freezes for someone else.** A guest that falls behind is
+  disconnected rather than allowed to apply backpressure; if the relay stops
+  keeping up, the host stops sharing and the local shell carries on.
 
 ## Security
 
-Not yet suitable for exposure to the public internet. In particular, session
-creation is unauthenticated and unrate-limited, and TLS is assumed to be
-terminated in front of the relay. The full list of gaps is tracked in
-[docs/architecture.md](docs/architecture.md#known-gaps-to-settle-before-phase-2).
+Not yet suitable for exposure to the public internet:
+
+- Session creation is unauthenticated and unrate-limited.
+- The relay sees plaintext terminal traffic — it can read and inject keystrokes.
+  End-to-end encryption is roadmap, so "self-hosted" is doing real work here.
+- Anyone holding a ticket has full write access; read-only guests are roadmap.
+- TLS is assumed to be terminated by a proxy in front of the relay.
+
+The full list is in
+[docs/architecture.md](docs/architecture.md#known-gaps).
 
 ## License
 
