@@ -74,13 +74,22 @@ choose_prefix() {
 
 # fallback_to_source builds with Go when no release matches, so the installer
 # is still useful on a platform we do not ship binaries for.
+#
+# The exit status of `go install` is passed on. Returning success regardless —
+# which this did — made the installer announce a binary it had not produced,
+# and `set -e` does not catch it because errexit is suspended inside a function
+# called as an `if` condition.
 fallback_to_source() {
-    if command -v go >/dev/null 2>&1; then
-        warn "No prebuilt binary found; building from source with Go."
-        GOBIN="$1" go install "github.com/$REPO/cmd/$BIN@latest"
-        return 0
-    fi
-    return 1
+    command -v go >/dev/null 2>&1 || return 1
+    warn "No release binary available; building from source with Go…"
+    GOBIN="$1" go install "github.com/$REPO/cmd/$BIN@latest" || return 1
+    return 0
+}
+
+# verify_installed refuses to report success without a binary to show for it.
+# Every path to "Installed" goes through here.
+verify_installed() {
+    [ -x "$1/$BIN" ] || die "installation did not produce $1/$BIN"
 }
 
 main() {
@@ -109,14 +118,24 @@ main() {
     fi
 
     if ! $fetch "$url" 2>/dev/null; then
+        warn "Could not download $url"
         if fallback_to_source "$prefix"; then
+            verify_installed "$prefix"
             say "Installed $prefix/$BIN"
+            "$prefix/$BIN" version 2>/dev/null || true
             check_path "$prefix"
             return
         fi
-        die "could not download $url
-No release is published for this platform yet, and Go is not installed to
-build from source. See https://github.com/$REPO for other options."
+        die "no release binary for this platform, and building from source did not work.
+
+This usually means one of:
+  * no release has been published yet;
+  * the repository is private, so neither the release download nor
+    \`go install\` can reach it without credentials;
+  * this machine cannot reach $BASE_URL.
+
+Ask whoever runs the relay for a binary, or build one from a checkout:
+  go build -o $BIN ./cmd/$BIN"
     fi
 
     tar -xzf "$tmp/$BIN.tar.gz" -C "$tmp"
@@ -127,6 +146,7 @@ build from source. See https://github.com/$REPO for other options."
         die "could not write to $prefix. Set OPENCONSOLE_PREFIX to somewhere you can write."
     fi
 
+    verify_installed "$prefix"
     say "Installed $prefix/$BIN"
     "$prefix/$BIN" version 2>/dev/null || true
     check_path "$prefix"
