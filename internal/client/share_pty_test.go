@@ -5,8 +5,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"io"
-	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -15,10 +13,6 @@ import (
 
 	"github.com/SmugZombie/OpenConsole/internal/terminal"
 )
-
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
 
 // output collects everything runShare writes to the local screen.
 type output struct {

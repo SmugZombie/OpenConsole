@@ -28,29 +28,40 @@ jobs:
         run: |
           set -eu
           mkdir -p dist
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os=${target%/*}
             arch=${target#*/}
             echo "building openconsole for $os/$arch"
+            # Windows programs need the .exe suffix to be runnable, and
+            # install.ps1 looks for that name inside the archive.
+            exe=""
+            if [ "$os" = windows ]; then exe=".exe"; fi
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
               -trimpath \
               -ldflags "-s -w -X main.version=${VERSION}" \
-              -o "dist/openconsole" ./cmd/openconsole
-            # The installer expects openconsole_<os>_<arch>.tar.gz holding a
-            # bare `openconsole`. Keep the two in step.
+              -o "dist/openconsole${exe}" ./cmd/openconsole
+            # The installers expect openconsole_<os>_<arch> holding a bare
+            # `openconsole`: a .tar.gz for Unix, a .zip for Windows, because
+            # that is what each platform can unpack without help. Keep the
+            # names in step with install.sh and install.ps1.
             # LICENSE rides along: MIT asks for the notice to be included with
-            # copies, and a release tarball is a copy. install.sh takes the
-            # bare binary and ignores anything else in the archive.
+            # copies, and a release archive is a copy. The installers take the
+            # bare binary and ignore anything else in the archive.
             cp LICENSE dist/LICENSE
-            tar -czf "dist/openconsole_${os}_${arch}.tar.gz" -C dist openconsole LICENSE
-            rm dist/openconsole dist/LICENSE
+            if [ "$os" = windows ]; then
+              (cd dist && zip -q "openconsole_${os}_${arch}.zip" openconsole.exe LICENSE)
+            else
+              tar -czf "dist/openconsole_${os}_${arch}.tar.gz" -C dist openconsole LICENSE
+            fi
+            rm "dist/openconsole${exe}" dist/LICENSE
           done
-          cd dist && sha256sum *.tar.gz > checksums.txt
+          cd dist && sha256sum *.tar.gz *.zip > checksums.txt
 
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
+            dist/*.zip
             dist/checksums.txt
           generate_release_notes: true

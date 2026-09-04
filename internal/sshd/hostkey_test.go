@@ -3,6 +3,7 @@ package sshd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,13 @@ func TestLoadOrCreateHostKeyCreatesAndReuses(t *testing.T) {
 }
 
 func TestCreatedHostKeyIsOwnerOnly(t *testing.T) {
+	// Windows has no Unix mode bits: a file's protection comes from its ACL,
+	// which it inherits from the directory, and Go reports 0666 whatever the
+	// mode passed to OpenFile. There is nothing here to assert on.
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not how Windows protects a file")
+	}
+
 	path := filepath.Join(t.TempDir(), "host_key")
 	if _, err := LoadOrCreateHostKey(path); err != nil {
 		t.Fatalf("LoadOrCreateHostKey: %v", err)

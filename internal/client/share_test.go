@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,11 @@ import (
 	"github.com/SmugZombie/OpenConsole/internal/protocol"
 	"github.com/SmugZombie/OpenConsole/internal/tunnel"
 )
+
+// discardLogger is the logger for tests that do not care what was logged.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 // deadConn is a tunnel that refuses every write, standing in for a relay that
 // has gone away mid-session.

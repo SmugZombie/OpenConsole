@@ -29,12 +29,14 @@ func init() {
 	if err := mime.AddExtensionType(".webmanifest", "application/manifest+json"); err != nil {
 		panic("webui: registering the webmanifest media type: " + err.Error())
 	}
-	// The installer is served as plain text rather than a shell type so a
-	// browser displays it instead of downloading it. Anyone told to pipe a
+	// The installers are served as plain text rather than a script type so a
+	// browser displays them instead of downloading them. Anyone told to pipe a
 	// script into a shell should be able to read it first by opening the same
 	// URL, and a download prompt discourages exactly that.
-	if err := mime.AddExtensionType(".sh", "text/plain; charset=utf-8"); err != nil {
-		panic("webui: registering the shell script media type: " + err.Error())
+	for _, ext := range []string{".sh", ".ps1"} {
+		if err := mime.AddExtensionType(ext, "text/plain; charset=utf-8"); err != nil {
+			panic("webui: registering the " + ext + " media type: " + err.Error())
+		}
 	}
 }
 

@@ -69,8 +69,9 @@ number of guests.
 ## Requirements
 
 - Go 1.23 or newer
-- macOS or Linux to *share* a terminal (it needs a PTY). The relay and the join
-  client also run on Windows.
+- macOS, Linux, or Windows 10 1809 (build 17763) and newer. Sharing needs a
+  pseudo-terminal: a pty on Unix, a pseudo-console on Windows. Joining works
+  anywhere, and needs nothing installed at all if you use a browser.
 - Node 20+ only if you want to change the browser client. The built bundle is
   committed, so `go build` alone produces a relay with a working UI.
 
@@ -79,8 +80,16 @@ Four dependencies, all of them small: `coder/websocket`, `creack/pty`,
 
 ## Install
 
+macOS and Linux:
+
 ```sh
 curl -fsSL https://openconsole.dev/install.sh | sh
+```
+
+Windows, in PowerShell:
+
+```powershell
+irm https://openconsole.dev/install.ps1 | iex
 ```
 
 Or with Go: `go install github.com/SmugZombie/OpenConsole/cmd/openconsole@latest`
@@ -89,8 +98,9 @@ You only need this to **share** a terminal, or to join from one. To **join**,
 a browser needs nothing installed, and neither does
 `ssh <session-id>@your-relay`.
 
-Any relay serves its own installer, so a self-hosted one works the same way:
-`curl -fsSL https://your-relay/install.sh | sh`.
+Any relay serves its own installers, so a self-hosted one works the same way:
+`curl -fsSL https://your-relay/install.sh | sh`, or
+`irm https://your-relay/install.ps1 | iex`.
 
 ## Quick start
 
@@ -107,6 +117,24 @@ whoever is joining, and they open the link in a browser or run
 `openconsole join <ticket>`.
 
 Both ends are now the same shell.
+
+### On Windows
+
+`openconsole` shares `cmd.exe` by default, because `%COMSPEC%` is the one shell
+every Windows has. To share PowerShell instead:
+
+```powershell
+openconsole -shell powershell.exe   # or pwsh.exe for PowerShell 7
+```
+
+`$SHELL` is ignored on Windows even when it is set: under Git Bash it names a
+POSIX path such as `/usr/bin/bash`, which Windows cannot start. Point `-shell`
+at the real executable — `bash.exe` works fine.
+
+The console is a real one: a pseudo-console (ConPTY), so full-screen programs,
+colours, arrow keys and Ctrl-C all behave as they do locally. Guests see the
+same thing whether they join from a browser, from `openconsole join`, or from
+`ssh`.
 
 ### Running your own relay
 
@@ -272,7 +300,7 @@ rather than guessed at.
 | --- | --- | --- | --- |
 | `-server` | `OPENCONSOLE_SERVER` | `https://openconsole.dev` | Relay base URL |
 | `-local` | — | — | Shorthand for `-server http://localhost:8080` |
-| `-shell` | — | `$SHELL` | Shell to run |
+| `-shell` | — | `$SHELL`, `%COMSPEC%` on Windows | Shell to run |
 | `-read-only` | — | — | Join without typing (`join` only) |
 | `-no-encryption` | — | — | Share unencrypted, so `ssh` clients can join |
 | `-allow-forward` | — | none | Targets guests may reach, or `any` (share only) |

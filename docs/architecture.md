@@ -37,8 +37,8 @@ both sides dial out to, so neither end needs to be reachable.
 
 ### `cmd/openconsole` — host CLI
 
-Starts a shell on a PTY, asks the relay for a session, dials the tunnel, and
-streams terminal bytes. It prints a ticket for whoever is joining and tears the
+Starts a shell on a PTY — a pseudo-console on Windows — asks the relay for a
+session, dials the tunnel, and streams terminal bytes. It prints a ticket for whoever is joining and tears the
 session down when the shell exits. The same binary joins someone else's terminal
 with `openconsole join <ticket>`.
 
@@ -57,7 +57,7 @@ executes anything; it is a broker. Stateless beyond memory, and shipped as a
 | `internal/server` | HTTP API, tunnel endpoint, config, logging, lifecycle. | ✅ |
 | `internal/client` | Host CLI: share, join, relay API client. | ✅ |
 | `internal/tunnel` | Transport. The only package that knows WebSockets exist. | ✅ |
-| `internal/terminal` | PTY and shell handling. Produces and consumes bytes. | ✅ |
+| `internal/terminal` | PTY and shell handling — a pty on Unix, a pseudo-console on Windows, behind one interface. Produces and consumes bytes. | ✅ |
 | `internal/webui` | Serves the embedded browser client. | ✅ |
 | `internal/sshd` | SSH listener; joins stock ssh clients to a terminal. | ✅ |
 | `web/` | Browser client sources: TypeScript, Vite, xterm.js. | ✅ |
@@ -495,9 +495,12 @@ fails to connect.
    per-guest identity or audit trail.
 4. **Single-process only.** Sessions and bridges live in one process's memory,
    so the relay cannot be horizontally scaled without sticky routing.
-5. **No Windows host support.** Sharing needs a PTY; ConPTY is not wired up. The
-   relay and the join client build and run on Windows, but `openconsole` cannot
-   share a terminal there.
+5. **Windows sharing needs Windows 10 1809 or newer.** Sharing runs the shell
+   on a pseudo-console (ConPTY), which older releases do not have; there the
+   client can still join a session but not host one. Window size is polled on
+   Windows rather than signalled, because a console resize is not delivered to
+   the program running in it, so a guest sees a resize up to a quarter of a
+   second late.
 6. **A guest link is a bearer capability.** Anyone who obtains the full URL has
    the terminal. It cannot be revoked short of ending the session, and there is
    no per-guest identity or audit trail.

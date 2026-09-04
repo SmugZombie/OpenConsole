@@ -81,14 +81,21 @@
             </div>
 
             <p class="connect-note">
-              To <strong>share your own terminal</strong>, install the client:
+              To <strong>share your own terminal</strong>, install the client
+              — macOS or Linux:
             </p>
             <pre><code>curl -fsSL <span data-relay-origin>https://openconsole.dev</span>/install.sh | sh</code></pre>
+            <p class="connect-note">Windows, in PowerShell:</p>
+            <pre><code>irm <span data-relay-origin>https://openconsole.dev</span>/install.ps1 | iex</code></pre>
             <p class="connect-note">
               Then run <code>openconsole</code>. It prints a ticket and a link
-              to send to whoever is joining.
-              <a href="/install.sh">Read the script</a> before you run it — it
-              downloads a release binary from GitHub and does nothing else.
+              to send to whoever is joining. On Windows that shares
+              <code>cmd.exe</code>; add
+              <code>-shell powershell.exe</code> to share PowerShell instead.
+              Read the script
+              (<a href="/install.sh">sh</a>, <a href="/install.ps1">ps1</a>)
+              before you run it — it downloads a release binary from GitHub and
+              does nothing else.
             </p>
 
             <p class="connect-note muted-note">

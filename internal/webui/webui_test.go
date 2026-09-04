@@ -97,9 +97,10 @@ func TestServesBrandAssets(t *testing.T) {
 		{"/apple-touch-icon.png", "image/png"},
 		{"/og.jpg", "image/jpeg"},
 		{"/site.webmanifest", "application/manifest+json"},
-		// Plain text so a browser shows the installer rather than downloading
-		// it: anyone piping a script into a shell should be able to read it.
+		// Plain text so a browser shows the installers rather than downloading
+		// them: anyone piping a script into a shell should be able to read it.
 		{"/install.sh", "text/plain"},
+		{"/install.ps1", "text/plain"},
 	}
 	for _, tc := range tests {
 		rec := get(t, mux, tc.path)
@@ -175,8 +176,8 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
-// The installer is the one file people are told to pipe into a shell, so it
-// has to actually be there and actually be a script.
+// The installers are the files people are told to pipe into a shell, so they
+// have to actually be there and actually be scripts.
 func TestInstallerIsServed(t *testing.T) {
 	rec := get(t, newMux(), "/install.sh")
 	if rec.Code != http.StatusOK {
@@ -189,6 +190,23 @@ func TestInstallerIsServed(t *testing.T) {
 	for _, want := range []string{"SmugZombie/OpenConsole", "openconsole"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the installer does not mention %q", want)
+		}
+	}
+}
+
+// Windows has an installer of its own: `irm .../install.ps1 | iex` is what a
+// Windows user is told to run, and it fetches a different archive.
+func TestWindowsInstallerIsServed(t *testing.T) {
+	rec := get(t, newMux(), "/install.ps1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /install.ps1 = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// The archive name has to stay in step with what the release workflow
+	// publishes, so it is asserted here rather than only read.
+	for _, want := range []string{"SmugZombie/OpenConsole", "windows_amd64", "openconsole_$Platform.zip", "openconsole.exe"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the Windows installer does not mention %q", want)
 		}
 	}
 }
