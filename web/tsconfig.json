@@ -19,5 +19,11 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "vite.config.ts"]
+  // Tests are excluded here on purpose. This config is what `npm run build`
+  // checks, and a production bundle should not compile tests — one of them
+  // imports a fixture shared with internal/e2e, which lives outside this
+  // directory and is not present in the container image's build context.
+  // tsconfig.test.json is the one that covers them.
+  "include": ["src", "vite.config.ts"],
+  "exclude": ["src/**/*.test.ts"]
 }

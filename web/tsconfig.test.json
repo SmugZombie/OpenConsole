@@ -1,0 +1,8 @@
+{
+  // Everything tsconfig.json checks, plus the tests. Used by `npm run
+  // typecheck`, which runs where the whole repository is present — the shared
+  // crypto fixture lives in internal/e2e.
+  "extends": "./tsconfig.json",
+  "include": ["src", "vite.config.ts"],
+  "exclude": []
+}

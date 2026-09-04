@@ -54,6 +54,12 @@ jobs:
       - run: npm ci
         working-directory: web
 
+      # Covers the test files too, which the production build deliberately
+      # does not: one of them imports a fixture shared with internal/e2e, and
+      # that only resolves where the whole repository is present.
+      - run: npm run typecheck
+        working-directory: web
+
       - run: npm run test
         working-directory: web
 
