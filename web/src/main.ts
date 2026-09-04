@@ -13,6 +13,7 @@ import '@xterm/xterm/css/xterm.css';
 
 import './style.css';
 import { Session } from './crypto';
+import { mountFooter } from './footer';
 import {
   parseSessionURL,
   parseTicket,
@@ -35,7 +36,10 @@ function el<T extends HTMLElement>(id: string): T {
 /* --- landing -------------------------------------------------------------- */
 
 function showLanding(): void {
-  el('landing').hidden = false;
+  // The wrapper, not the card: the footer lives inside it and has to appear
+  // with it.
+  el('landing-wrap').hidden = false;
+  mountFooter();
 
   // The instructions name this relay rather than a placeholder, so they can be
   // copied without editing. A self-hosted relay says its own address.

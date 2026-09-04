@@ -194,6 +194,42 @@ func TestInstallerIsServed(t *testing.T) {
 	}
 }
 
+// The footer links to /docs, so that path has to answer — and answer with the
+// explainer rather than the app, which is a different document at a similar
+// URL.
+func TestDocsPageIsServed(t *testing.T) {
+	mux := newMux()
+	for _, path := range []string{"/docs", "/docs/"} {
+		rec := get(t, mux, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", path, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("GET %s Content-Type = %q, want text/html", path, ct)
+		}
+		body := rec.Body.String()
+		// The things a reader came for, and the footer the page is reached
+		// from. Asserting on content rather than on a 200 is what would catch
+		// the explainer being replaced by the app's index by a build mistake.
+		for _, want := range []string{"Security", "openconsole.dev", "github.com/SmugZombie/OpenConsole"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("GET %s does not mention %q", path, want)
+			}
+		}
+	}
+}
+
+// Both documents are served from a route of their own, so neither should also
+// answer at its filename: one page, one URL.
+func TestDocumentsAreNotServedTwice(t *testing.T) {
+	mux := newMux()
+	for _, path := range []string{"/index.html", "/docs.html"} {
+		if rec := get(t, mux, path); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404: it is already served elsewhere", path, rec.Code)
+		}
+	}
+}
+
 // Windows has an installer of its own: `irm .../install.ps1 | iex` is what a
 // Windows user is told to run, and it fetches a different archive.
 func TestWindowsInstallerIsServed(t *testing.T) {

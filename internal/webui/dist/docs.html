@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <!-- Unlike the landing page, this one holds nothing capability-shaped and
+         is the page someone should be able to find before they trust the
+         tool, so it is left indexable. -->
+
+    <title>What OpenConsole is · OpenConsole</title>
+    <meta
+      name="description"
+      content="What OpenConsole does, how to use it, and exactly what the relay in the middle can and cannot see."
+    />
+    <meta name="theme-color" content="#12141a" />
+
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content="What OpenConsole is" />
+    <meta
+      property="og:description"
+      content="What OpenConsole does, how to use it, and exactly what the relay in the middle can and cannot see."
+    />
+    <meta property="og:image" content="/og.jpg" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script type="module" crossorigin src="/assets/docs-ECBlOy-s.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/footer-CszaA-GW.js">
+    <link rel="stylesheet" crossorigin href="/assets/footer-IeLEUO9A.css">
+    <link rel="stylesheet" crossorigin href="/assets/docs-COrOiZ4K.css">
+  </head>
+  <body>
+    <article class="doc">
+      <header class="doc-head">
+        <a class="doc-home" href="/">
+          <img src="/icon.svg" alt="" width="30" height="30" />
+          <span class="wordmark"><span>Open</span>Console</span>
+        </a>
+        <p class="lede">Share a terminal. No inbound ports.</p>
+      </header>
+
+      <nav class="doc-toc" aria-label="On this page">
+        <a href="#what">What it is</a>
+        <a href="#use">Using it</a>
+        <a href="#why">Why it is useful</a>
+        <a href="#security">Security</a>
+        <a href="#limits">What it is not</a>
+      </nav>
+
+      <section id="what">
+        <h2>What it is</h2>
+        <p>
+          OpenConsole hands someone else your terminal. You run one command,
+          it prints a link, and whoever opens that link sees the same shell you
+          are typing in — and can type into it too, if you let them.
+        </p>
+        <p>
+          Neither end has to be reachable from the internet. Both dial
+          <em>out</em> to a relay, which brokers bytes between the one terminal
+          being shared and everyone watching it. Nothing listens on your
+          machine, no port is opened, no firewall rule changes.
+        </p>
+        <pre class="diagram"><code>    your machine                 relay                   a guest
+  ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+  │  shell on a  │  dials  │              │  dials  │   browser,   │
+  │ pty / ConPTY │ ──────▶ │   brokers    │ ◀────── │  CLI or ssh  │
+  │              │   out   │    bytes     │   out   │              │
+  └──────────────┘         └──────────────┘         └──────────────┘</code></pre>
+        <p>
+          The relay never executes anything. It is a switchboard: it knows a
+          session exists and who is attached to it, and — when the session is
+          encrypted, which is the default — it cannot read a byte of what goes
+          through it.
+        </p>
+      </section>
+
+      <section id="use">
+        <h2>Using it</h2>
+
+        <h3>Share your terminal</h3>
+        <p>Install the client, then run it:</p>
+        <pre><code>curl -fsSL <span data-relay-origin>https://openconsole.dev</span>/install.sh | sh
+openconsole</code></pre>
+        <p>On Windows, in PowerShell:</p>
+        <pre><code>irm <span data-relay-origin>https://openconsole.dev</span>/install.ps1 | iex
+openconsole</code></pre>
+        <p>
+          It prints a link and a ticket. Send either to whoever is joining. When
+          you exit the shell, the session ends. On Windows this shares
+          <code>cmd.exe</code>; add <code>-shell powershell.exe</code> for
+          PowerShell.
+        </p>
+
+        <h3>Join someone else's</h3>
+        <p>
+          Open the link in a browser — nothing to install, which is the point.
+          From a terminal, <code>openconsole join &lt;ticket&gt;</code>. A stock
+          <code>ssh</code> client works too, if the host turned encryption off
+          for that reason.
+        </p>
+
+        <h3>Let someone watch without typing</h3>
+        <p>
+          Every session also produces a watch-only link. Hand that one out when
+          somebody only needs to see. It is not a setting the relay is trusted
+          to honour — see <a href="#security">Security</a>.
+        </p>
+
+        <h3>Reach a port on the host</h3>
+        <p>
+          A guest can forward a TCP port through the same connection, so a
+          database or a dev server on the host becomes reachable locally:
+        </p>
+        <pre><code>openconsole -allow-forward localhost:5432          # what the host permits
+openconsole join &lt;ticket&gt; -L 5432:localhost:5432  # what the guest asks for</code></pre>
+        <p>
+          Forwarding is off unless the host asks for it, and the host names what
+          may be reached. A forward reaches whatever that machine can reach,
+          which is why it is never on by default.
+        </p>
+      </section>
+
+      <section id="why">
+        <h2>Why it is useful</h2>
+        <ul>
+          <li>
+            <strong>Nothing to install to join.</strong> A browser is enough.
+            The person you are helping does not have to set anything up before
+            you can help them.
+          </li>
+          <li>
+            <strong>No inbound ports, no VPN, no firewall change.</strong> Both
+            ends dial out. This works from a laptop behind NAT, a container, or
+            a locked-down corporate network.
+          </li>
+          <li>
+            <strong>It is the real terminal.</strong> Full-screen programs,
+            colours, arrow keys and Ctrl-C — not a recording, not a video
+            stream. Guests see the shell as it happens, at the size the host's
+            window actually is.
+          </li>
+          <li>
+            <strong>Pairing, debugging, teaching, support.</strong> Anywhere the
+            useful thing is "look at what my machine is doing", rather than
+            screenshots and copied-out log lines.
+          </li>
+          <li>
+            <strong>You can run the relay yourself.</strong> One binary, one
+            container image. Then the only machines involved are yours.
+          </li>
+        </ul>
+      </section>
+
+      <section id="security">
+        <h2>Security</h2>
+        <p>
+          You are giving somebody a shell. That deserves a straight account of
+          who can see what, so here is one, including the parts that are not
+          reassuring.
+        </p>
+
+        <h3>The relay cannot read your terminal</h3>
+        <p>
+          Sessions are end-to-end encrypted by default, with AES-256-GCM. The
+          key is generated on the host and the relay is never told it: it lives
+          in the ticket, which travels to your guest out of band, and in the
+          link's <em>fragment</em>, which browsers do not send to servers. There
+          is no key exchange, so there is nothing for the relay to interpose on.
+          It routes ciphertext.
+        </p>
+
+        <h3>Watch-only is arithmetic, not a rule</h3>
+        <p>
+          Two keys are derived from that root, one per direction. A full guest
+          gets the root and can derive both. A viewer is given only the
+          host-to-guest key — enough to read the terminal, and not enough to
+          produce input the host will accept. Read-only does not depend on the
+          relay behaving itself; a viewer cannot type because the arithmetic
+          will not do it.
+        </p>
+
+        <h3>What is still visible to the relay</h3>
+        <p>
+          Contents are hidden; shape is not. The relay can see that a session
+          exists, when someone joined, how large each burst of output is, and
+          when. It can also drop or reorder frames — which breaks a session
+          rather than falsifying one. Padding and cover traffic are not
+          attempted.
+        </p>
+
+        <h3>A link is a bearer capability</h3>
+        <p>
+          Anyone who has the whole link has the terminal. There is no per-guest
+          identity, no audit trail, and no way to revoke one link short of
+          ending the session. Treat it like a password: send it over something
+          you trust, and end the session when you are done.
+        </p>
+
+        <h3>Turning encryption off</h3>
+        <p>
+          <code>-no-encryption</code> exists for exactly one reason: a stock
+          <code>ssh</code> client has no key and cannot decrypt. It hands the
+          relay everything encryption withholds — it can then read the terminal
+          and inject keystrokes. Use it when the ssh path is what you need, and
+          know what you are trading.
+        </p>
+
+        <h3>If you run the relay</h3>
+        <p>
+          Terminate TLS in front of it: tokens are bearer credentials and the
+          code assumes a proxy is doing that. Session creation is
+          unauthenticated by default — rate limited and capped, but open —
+          and <code>OPENCONSOLE_CREATE_TOKEN</code> closes it. Sessions live in
+          memory only, expire on a TTL, and nothing is written to disk.
+        </p>
+      </section>
+
+      <section id="limits">
+        <h2>What it is not</h2>
+        <p>
+          It is not audited, and it is not yet something to expose to the public
+          internet without reading the gaps first. They are written down rather
+          than glossed over:
+          <a href="https://github.com/SmugZombie/OpenConsole/blob/main/docs/architecture.md#known-gaps"
+            >known gaps</a
+          >.
+        </p>
+        <p>
+          It is not a screen share, a recording tool, or a way to reach a
+          machine that is switched off. The host has to be running the command
+          for a session to exist at all.
+        </p>
+      </section>
+    </article>
+
+    <footer class="site-footer">
+      <nav>
+        <a href="https://github.com/SmugZombie/OpenConsole">GitHub</a>
+        <span aria-hidden="true">·</span>
+        <a href="/">Join a session</a>
+        <span aria-hidden="true">·</span>
+        <span class="version" id="relay-version" hidden></span>
+      </nav>
+      <p class="copyright">© <span data-year>2026</span> openconsole.dev</p>
+    </footer>
+
+  </body>
+</html>

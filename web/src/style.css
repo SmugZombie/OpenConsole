@@ -386,3 +386,56 @@ code {
   color: var(--muted);
   line-height: 1.5;
 }
+
+/* --- footer -------------------------------------------------------------- */
+
+/* Shared by the landing page and the explainer. Quiet on purpose: it is the
+   small print, and the thing people came for is above it. */
+.site-footer {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.site-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.site-footer a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* The version is hidden until the relay answers, so the separator before it
+   never dangles next to nothing. */
+.site-footer .version {
+  font-family: var(--font-mono);
+}
+
+.site-footer .copyright {
+  margin: 8px 0 0;
+}
+
+/* The landing page centres its card in the viewport, so the footer has to sit
+   outside that grid or it would be centred along with it. */
+#landing-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+#landing-wrap #landing {
+  flex: 1;
+}
