@@ -94,37 +94,35 @@ Any relay serves its own installer, so a self-hosted one works the same way:
 
 ## Quick start
 
-Three terminals, all on one machine:
+Install it, then share:
+
+```sh
+curl -fsSL https://openconsole.dev/install.sh | sh
+openconsole
+```
+
+That is the whole thing. It talks to `https://openconsole.dev` by default, so
+there is nothing to deploy first. It prints a link and a ticket — send either to
+whoever is joining, and they open the link in a browser or run
+`openconsole join <ticket>`.
+
+Both ends are now the same shell.
+
+### Running your own relay
+
+The relay is the part you self-host. Point clients at it with `-server`, or
+`OPENCONSOLE_SERVER`:
 
 ```sh
 git clone https://github.com/SmugZombie/OpenConsole.git
 cd OpenConsole
 go build -o bin/ ./cmd/...
+
+./bin/openconsole-server                       # terminal 1
+./bin/openconsole -local                       # terminal 2 — shorthand for
+                                               # -server http://localhost:8080
+./bin/openconsole join <ticket> -local         # terminal 3
 ```
-
-**1 — run a relay**
-
-```sh
-./bin/openconsole-server
-```
-
-**2 — share a terminal**
-
-```sh
-./bin/openconsole
-```
-
-It prints a ticket. Copy it.
-
-**3 — join**
-
-Open the printed link in a browser, or from another terminal:
-
-```sh
-./bin/openconsole join <ticket>
-```
-
-Both are now the same shell.
 
 ### Joining over SSH
 
@@ -151,6 +149,10 @@ openconsole -server https://console.example.com
 openconsole join <ticket> -server https://console.example.com
 # or: export OPENCONSOLE_SERVER=https://console.example.com
 ```
+
+The relay a client talks to sees its plaintext terminal traffic, so run your own
+if that matters. `https://openconsole.dev` is a convenience, not a trust
+boundary — see [Security](#security).
 
 ## Forwarding a port
 
@@ -262,7 +264,8 @@ rather than guessed at.
 
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
-| `-server` | `OPENCONSOLE_SERVER` | `http://localhost:8080` | Relay base URL |
+| `-server` | `OPENCONSOLE_SERVER` | `https://openconsole.dev` | Relay base URL |
+| `-local` | — | — | Shorthand for `-server http://localhost:8080` |
 | `-shell` | — | `$SHELL` | Shell to run |
 | `-read-only` | — | — | Join without typing (`join` only) |
 | `-allow-forward` | — | none | Targets guests may reach, or `any` (share only) |
@@ -368,6 +371,8 @@ Not yet suitable for exposure to the public internet:
   and `OPENCONSOLE_CREATE_TOKEN` closes it entirely, but an open relay is open.
 - The relay sees plaintext terminal traffic — it can read and inject keystrokes.
   End-to-end encryption is roadmap, so "self-hosted" is doing real work here.
+  Clients default to `https://openconsole.dev`; run your own relay and set
+  `OPENCONSOLE_SERVER` if you would rather not trust someone else's.
 - A link is a bearer capability and cannot be revoked short of ending the
   session. Hand out the watch-only link when someone only needs to look.
 - SSH auth is bounded per connection but not across them; nothing rate-limits

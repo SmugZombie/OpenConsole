@@ -13,9 +13,21 @@ import (
 	"strings"
 )
 
-// DefaultServer is the relay used when none is configured. It points at a
-// local development relay because there is no public relay to default to.
-const DefaultServer = "http://localhost:8080"
+// DefaultServer is the relay used when none is configured.
+//
+// The public relay, so `openconsole` works the moment it is installed. Someone
+// who has just run the install script has no relay of their own, and asking
+// them to stand one up before they can share a terminal would put the whole
+// point of the tool behind a deployment.
+//
+// https, not http: the token travels inside the tunnel and the relay is
+// reached over the internet. A default that quietly spoke plaintext to a
+// public host would be the wrong thing to make easy.
+const DefaultServer = "https://openconsole.dev"
+
+// LocalServer is the conventional address of a relay run on this machine. It
+// is not a default, only the value the docs and the -local flag use.
+const LocalServer = "http://localhost:8080"
 
 // EnvServer overrides the relay address.
 const EnvServer = "OPENCONSOLE_SERVER"
@@ -57,6 +69,9 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	fs := flag.NewFlagSet("openconsole", flag.ContinueOnError)
 	fs.SetOutput(output)
 	fs.StringVar(&cfg.Server, "server", cfg.Server, "relay base URL (env "+EnvServer+")")
+	// Shorthand for the development loop, which is otherwise the one common
+	// case that now needs a flag.
+	local := fs.Bool("local", false, "use a relay on this machine ("+LocalServer+")")
 	fs.StringVar(&cfg.Shell, "shell", cfg.Shell, "shell to run (default $SHELL)")
 	// Read from the environment only; a command line is world-readable.
 	cfg.RelayToken = getenv(EnvRelayToken)
@@ -75,11 +90,20 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 		fmt.Fprintf(output, "\nForwarding:\n")
 		fmt.Fprintf(output, "  openconsole -allow-forward localhost:5432\n")
 		fmt.Fprintf(output, "  openconsole join <ticket> -L 5432:localhost:5432\n")
+		fmt.Fprintf(output, "\nBy default this talks to %s.\n", DefaultServer)
+		fmt.Fprintf(output, "Use -local for a relay on this machine, or -server for your own.\n")
 		fmt.Fprintf(output, "\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+	if *local {
+		// An explicit -server still wins: -local is a convenience, not an
+		// override of something the user typed.
+		if !serverWasSet(fs) {
+			cfg.Server = LocalServer
+		}
 	}
 
 	list, err := ParseAllowlist(*allow)
@@ -93,6 +117,18 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// serverWasSet reports whether -server appeared on the command line, so that
+// -local does not quietly discard it.
+func serverWasSet(fs *flag.FlagSet) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "server" {
+			set = true
+		}
+	})
+	return set
 }
 
 // Validate checks that the relay address is a usable absolute HTTP(S) URL.

@@ -18,10 +18,13 @@ docker compose -f deploy/docker-compose.yml up -d --build
 docker compose -f deploy/docker-compose.yml logs -f
 ```
 
-Point a client at it:
+Point a client at it — clients default to the public relay, so a self-hosted
+one has to be named:
 
 ```sh
-openconsole -server http://localhost:8080
+openconsole -local                    # shorthand for http://localhost:8080
+openconsole -server https://console.example.com
+export OPENCONSOLE_SERVER=https://console.example.com   # or set it once
 ```
 
 ### What the image is
