@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -71,6 +72,15 @@ type Config struct {
 	// never start listening on a new port without the operator asking, and
 	// SSH needs a host-key decision that only they can make.
 	SSHAddr string
+	// SSHAdvertise is the host, optionally with a port, that guests should be
+	// told to ssh to.
+	//
+	// The relay cannot work this out. It knows what it listens on, not how it
+	// is reached: an HTTP proxy that does not carry arbitrary TCP ports forces
+	// SSH onto a separate name, and a published container port need not match
+	// the one inside. Empty means derive it from the relay URL, which is right
+	// when both arrive at the same place.
+	SSHAdvertise string
 	// SSHHostKey is where the SSH host key is read from, and written to if it
 	// does not exist. Empty means generate an ephemeral key per start, which
 	// is fine for a trial and wrong for anything reached twice.
@@ -101,6 +111,8 @@ const (
 	EnvLogLevel   = "OPENCONSOLE_LOG_LEVEL"
 	EnvSSHAddr    = "OPENCONSOLE_SSH_ADDR"
 	EnvSSHHostKey = "OPENCONSOLE_SSH_HOST_KEY"
+
+	EnvSSHHost = "OPENCONSOLE_SSH_HOST"
 
 	EnvCreateRate     = "OPENCONSOLE_CREATE_RATE"
 	EnvCreateBurst    = "OPENCONSOLE_CREATE_BURST"
@@ -136,6 +148,9 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	if v := getenv(EnvSSHHostKey); v != "" {
 		cfg.SSHHostKey = v
 	}
+	if v := getenv(EnvSSHHost); v != "" {
+		cfg.SSHAdvertise = v
+	}
 	for _, e := range []struct {
 		name string
 		dst  *int
@@ -166,6 +181,8 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 		"enable SSH joins on this address, e.g. :2222 (env "+EnvSSHAddr+"); empty disables SSH")
 	fs.StringVar(&cfg.SSHHostKey, "ssh-host-key", cfg.SSHHostKey,
 		"path to the SSH host key, created if absent (env "+EnvSSHHostKey+")")
+	fs.StringVar(&cfg.SSHAdvertise, "ssh-host", cfg.SSHAdvertise,
+		"host[:port] to tell guests to ssh to, when it differs from the relay URL (env "+EnvSSHHost+")")
 	fs.IntVar(&cfg.CreateRatePerMin, "create-rate", cfg.CreateRatePerMin,
 		"session creations per minute per source, 0 to disable (env "+EnvCreateRate+")")
 	fs.IntVar(&cfg.CreateBurst, "create-burst", cfg.CreateBurst,
@@ -216,11 +233,53 @@ func (c Config) Validate() error {
 	if c.SSHAddr == "" && c.SSHHostKey != "" {
 		return fmt.Errorf("-ssh-host-key was given but SSH is disabled; set -ssh-listen too")
 	}
+	if c.SSHAddr == "" && c.SSHAdvertise != "" {
+		return fmt.Errorf("-ssh-host was given but SSH is disabled; set -ssh-listen too")
+	}
+	if _, _, err := ParseSSHAdvertise(c.SSHAdvertise); err != nil {
+		return err
+	}
 	return nil
 }
 
 // SSHEnabled reports whether the SSH listener should run.
 func (c Config) SSHEnabled() bool { return c.SSHAddr != "" }
+
+// ParseSSHAdvertise splits the value guests should be told to ssh to.
+//
+// A bare host overrides only the host, leaving the port as the one the relay
+// listens on: moving SSH to its own name is the common case, and silently
+// changing the port too would be a surprise. Adding ":port" overrides both.
+func ParseSSHAdvertise(spec string) (host string, port int, err error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", 0, nil
+	}
+	if strings.Contains(spec, "/") || strings.Contains(spec, "://") {
+		return "", 0, fmt.Errorf(
+			"invalid -ssh-host %q: give a host or host:port, not a URL", spec)
+	}
+
+	h, p, splitErr := net.SplitHostPort(spec)
+	if splitErr != nil {
+		// No port: the whole value is the host. An IPv6 literal has to be
+		// bracketed to be distinguishable, and SplitHostPort would have
+		// accepted it above.
+		if strings.Count(spec, ":") > 0 {
+			return "", 0, fmt.Errorf(
+				"invalid -ssh-host %q: bracket an IPv6 address, as in [::1]:22", spec)
+		}
+		return spec, 0, nil
+	}
+	if h == "" {
+		return "", 0, fmt.Errorf("invalid -ssh-host %q: no host", spec)
+	}
+	n, convErr := strconv.Atoi(p)
+	if convErr != nil || n < 1 || n > 65535 {
+		return "", 0, fmt.Errorf("invalid -ssh-host %q: bad port", spec)
+	}
+	return h, n, nil
+}
 
 // parseTTL accepts a Go duration ("30m", "1h30m"). A bare integer is rejected
 // rather than guessed at, so nobody has to wonder whether "30" means seconds.

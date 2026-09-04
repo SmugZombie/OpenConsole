@@ -39,12 +39,10 @@ function showLanding(): void {
 
   // The instructions name this relay rather than a placeholder, so they can be
   // copied without editing. A self-hosted relay says its own address.
-  for (const node of document.querySelectorAll('[data-relay-host]')) {
-    node.textContent = window.location.hostname;
-  }
   for (const node of document.querySelectorAll('[data-relay-origin]')) {
     node.textContent = window.location.origin;
   }
+  void describeSSH();
 
   const form = el<HTMLFormElement>('join-form');
   const input = el<HTMLInputElement>('ticket');
@@ -65,6 +63,31 @@ function showLanding(): void {
   });
 
   input.focus();
+}
+
+/**
+ * Fills in the ssh instructions from what the relay reports.
+ *
+ * The address is asked for rather than assumed: ssh commonly lives on a name
+ * of its own, because the HTTP proxies people put in front rarely carry
+ * arbitrary TCP ports. And a relay with ssh switched off should not be telling
+ * anyone to use it, which the previous hardcoded line did.
+ */
+async function describeSSH(): Promise<void> {
+  try {
+    const res = await fetch('/health', { headers: { Accept: 'application/json' } });
+    if (!res.ok) return;
+    const health = (await res.json()) as { ssh_port?: number; ssh_host?: string };
+    if (!health.ssh_port) return;
+
+    const host = health.ssh_host || window.location.hostname;
+    const port = health.ssh_port === 22 ? '' : `-p ${health.ssh_port} `;
+    el('ssh-command').textContent = `ssh ${port}<session-id>@${host}`;
+    el('ssh-help').hidden = false;
+  } catch {
+    // A relay that will not answer /health is not one to give instructions
+    // about; the browser and ticket paths above still stand on their own.
+  }
 }
 
 /* --- session -------------------------------------------------------------- */

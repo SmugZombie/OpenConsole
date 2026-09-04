@@ -34,6 +34,11 @@ services:
       # greets returning guests with the host-key-changed warning that normally
       # means an active attack.
       OPENCONSOLE_SSH_HOST_KEY: "/var/lib/openconsole/ssh_host_key"
+      # Where guests should ssh to, when that is not the name they reached the
+      # API on. An HTTP proxy in front carries HTTP and not arbitrary TCP
+      # ports, so ssh usually needs a name of its own pointed straight here.
+      # Leave unset when both arrive at the same place.
+      # OPENCONSOLE_SSH_HOST: "ssh.example.com:22"
 
     volumes:
       # The only state the relay keeps on disk. Sessions stay in memory.

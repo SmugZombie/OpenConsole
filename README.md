@@ -242,6 +242,7 @@ Precedence is **defaults → environment → flags**.
 | `-log-level` | `OPENCONSOLE_LOG_LEVEL` | `info` | `debug`\|`info`\|`warn`\|`error` |
 | `-ssh-listen` | `OPENCONSOLE_SSH_ADDR` | off | Enable SSH joins, e.g. `:2222` |
 | `-ssh-host-key` | `OPENCONSOLE_SSH_HOST_KEY` | ephemeral | Host key path, created if absent |
+| `-ssh-host` | `OPENCONSOLE_SSH_HOST` | same as the API | `host[:port]` to tell guests to ssh to |
 | `-create-rate` | `OPENCONSOLE_CREATE_RATE` | `30` | Session creations per minute per source, `0` disables |
 | `-create-burst` | `OPENCONSOLE_CREATE_BURST` | `10` | Creations allowed at once per source |
 | `-max-sessions` | `OPENCONSOLE_MAX_SESSIONS` | `512` | Live session ceiling, `0` for none |
@@ -256,6 +257,11 @@ private one; clients present it as `OPENCONSOLE_RELAY_TOKEN`.
 
 SSH is off unless `-ssh-listen` is set: an upgrade should not start listening on
 a new port unasked.
+
+**Behind an HTTP proxy, set `-ssh-host`.** Proxies carry HTTP, not arbitrary TCP
+ports, so SSH usually needs a name of its own pointing straight at the relay —
+`ssh.example.com:22`. The relay knows what it listens on, not how it is reached,
+and both the banner and the landing page use whatever it is told.
 
 Durations are Go duration strings (`30m`, `1h30m`). A bare `30` is rejected
 rather than guessed at.

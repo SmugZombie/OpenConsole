@@ -35,7 +35,7 @@ func printBanner(w io.Writer, cfg Config, sess *Session, ticket Ticket, api *Cli
 		fmt.Fprintf(w, "      (with -server %s, or OPENCONSOLE_SERVER)\n", cfg.Server)
 	}
 
-	if sshCmd := api.SSHCommand(sess.SessionID, sess.SSHPort); sshCmd != "" {
+	if sshCmd := api.SSHCommand(sess.SessionID, sess); sshCmd != "" {
 		if ticket.Encrypted() {
 			// Say why rather than leaving someone to discover that ssh
 			// produces a screen of noise.

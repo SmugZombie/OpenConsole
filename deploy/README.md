@@ -45,6 +45,7 @@ Every setting is an environment variable; see the table in the top-level README.
 | `OPENCONSOLE_LOG_LEVEL` | `info` |
 | `OPENCONSOLE_SSH_ADDR` | unset — SSH joins disabled |
 | `OPENCONSOLE_SSH_HOST_KEY` | unset — ephemeral key |
+| `OPENCONSOLE_SSH_HOST` | unset — same host as the API |
 
 Logs are JSON on stderr. With SSH off there is nothing to mount and the
 container runs read-only with no volumes at all.
@@ -101,6 +102,38 @@ Leave `OPENCONSOLE_SSH_HOST_KEY` unset and the relay generates a key per start
 and warns loudly. That is fine for a five-minute trial and wrong for anything
 anyone connects to twice.
 
+### When SSH lives somewhere else
+
+An HTTP reverse proxy — Cloudflare's included — carries HTTP, not arbitrary TCP
+ports. So SSH usually cannot share the name the site is on, and ends up on one
+of its own pointed straight at the relay.
+
+The relay knows what it *listens* on, not how it is *reached*, so tell it:
+
+```yaml
+environment:
+  OPENCONSOLE_SSH_ADDR: ":2222"                 # where it listens
+  OPENCONSOLE_SSH_HOST: "ssh.example.com:22"    # what to tell guests
+```
+
+That name must resolve straight to the relay, bypassing the proxy — an orange
+cloud in Cloudflare will not pass port 22 or 2222.
+
+`OPENCONSOLE_SSH_HOST` takes a host, optionally with a port:
+
+| Value | Guests are told |
+| --- | --- |
+| unset | the host they reached the API on, and the listening port |
+| `ssh.example.com` | that name, still on the **listening** port |
+| `ssh.example.com:22` | that name on port 22 |
+
+A bare name changes only the name, because silently moving the port too would
+be a surprise. Give the port when the outside one differs from the inside one,
+which it does whenever a container publishes 2222 as 22.
+
+Both the host's banner and the landing page use whatever the relay reports, so
+neither needs editing by hand.
+
 ### Port 22
 
 `ssh <session>@host` with no `-p` is the nicer experience. Map it in compose:
@@ -111,8 +144,7 @@ ports:
 ```
 
 Only on a host with nothing else on 22 — which usually means a dedicated box,
-since you still need your own sshd to administer it. Otherwise keep 2222 and
-tell guests to pass `-p 2222`.
+since you still need your own sshd to administer it.
 
 ### What the SSH server will not do
 

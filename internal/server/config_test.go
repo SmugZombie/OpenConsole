@@ -94,6 +94,67 @@ func TestLoadConfigSSH(t *testing.T) {
 	}
 }
 
+func TestParseSSHAdvertise(t *testing.T) {
+	tests := []struct {
+		in       string
+		wantHost string
+		wantPort int
+	}{
+		{"", "", 0},
+		// A bare host moves only the name; the listening port still applies,
+		// because silently changing that too would be a surprise.
+		{"ssh.openconsole.dev", "ssh.openconsole.dev", 0},
+		{"ssh.openconsole.dev:22", "ssh.openconsole.dev", 22},
+		{"  ssh.example.com:2222  ", "ssh.example.com", 2222},
+		{"203.0.113.4", "203.0.113.4", 0},
+		{"[2001:db8::1]:22", "2001:db8::1", 22},
+	}
+	for _, tc := range tests {
+		host, port, err := ParseSSHAdvertise(tc.in)
+		if err != nil {
+			t.Errorf("ParseSSHAdvertise(%q): %v", tc.in, err)
+			continue
+		}
+		if host != tc.wantHost || port != tc.wantPort {
+			t.Errorf("ParseSSHAdvertise(%q) = (%q, %d), want (%q, %d)",
+				tc.in, host, port, tc.wantHost, tc.wantPort)
+		}
+	}
+
+	for _, bad := range []string{
+		"https://ssh.example.com", // a URL, not a host
+		"ssh.example.com/path",
+		"2001:db8::1",       // an unbracketed IPv6 literal is ambiguous
+		"ssh.example.com:0", // not a dialable port
+		"ssh.example.com:99999",
+		"ssh.example.com:http",
+		":22",
+	} {
+		if _, _, err := ParseSSHAdvertise(bad); err == nil {
+			t.Errorf("ParseSSHAdvertise(%q) should have failed", bad)
+		}
+	}
+}
+
+func TestLoadConfigSSHHost(t *testing.T) {
+	cfg, err := LoadConfig(nil, env(map[string]string{
+		EnvSSHAddr: ":2222",
+		EnvSSHHost: "ssh.openconsole.dev",
+	}), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SSHAdvertise != "ssh.openconsole.dev" {
+		t.Fatalf("SSHAdvertise = %q", cfg.SSHAdvertise)
+	}
+
+	// Advertising a name for a listener that does not exist is a
+	// configuration someone believes is enabling SSH.
+	if _, err := LoadConfig([]string{"-ssh-host", "ssh.example.com"}, env(nil), io.Discard); err == nil {
+		t.Fatal("-ssh-host without -ssh-listen should have failed")
+	}
+}
+
 func TestLoadConfigRejectsBadValues(t *testing.T) {
 	tests := []struct {
 		name string

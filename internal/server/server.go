@@ -82,6 +82,14 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 				api.SetSSHPort(n)
 			}
 		}
+		// An operator who fronts SSH on its own name overrides that here. A
+		// bare host keeps the listening port; a host:port replaces it.
+		if host, port, err := ParseSSHAdvertise(cfg.SSHAdvertise); err == nil && host != "" {
+			api.SetSSHHost(host)
+			if port != 0 {
+				api.SetSSHPort(port)
+			}
+		}
 	}
 
 	return &Server{
@@ -170,7 +178,9 @@ func (s *Server) Run(ctx context.Context) error {
 	defer s.teardown()
 
 	if s.ssh != nil {
-		s.log.Info("ssh joins enabled", slog.String("addr", s.SSHAddr()))
+		s.log.Info("ssh joins enabled",
+			slog.String("addr", s.SSHAddr()),
+			slog.String("advertised_as", s.cfg.SSHAdvertise))
 		go func() {
 			if err := s.ssh.Run(ctx); err != nil {
 				s.log.Error("ssh listener stopped", slog.Any("error", err))

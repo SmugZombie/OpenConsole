@@ -383,6 +383,18 @@ trial, wrong for anything reached twice.
 SSH is **opt-in**: no `-ssh-listen`, no listener. An upgrade should never start
 listening on a new port without the operator asking.
 
+### Where guests are told to connect
+
+The relay knows what it listens on. It does not know how it is reached, and
+with an HTTP proxy in front the two differ: proxies carry HTTP, not arbitrary
+TCP ports, so SSH ends up on a separate name pointed straight at the relay.
+
+`-ssh-host` is how an operator says so, and it is reported in the session
+response and on `/health`, so the host's banner and the browser's landing page
+both print an address that works instead of guessing from the URL they happen
+to hold. A bare name overrides only the name — a container publishing 2222 as
+22 gives `host:port` to override both.
+
 ## Port forwarding
 
 A guest can reach a service only the host can see:

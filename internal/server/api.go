@@ -31,6 +31,9 @@ type healthResponse struct {
 	Tunnels int `json:"tunnels"`
 	// SSHPort is the relay's SSH port, or 0 when SSH joins are disabled.
 	SSHPort int `json:"ssh_port,omitempty"`
+	// SSHHost is the name guests should ssh to, when it differs from the one
+	// they reached the API on. Empty means they are the same.
+	SSHHost string `json:"ssh_host,omitempty"`
 }
 
 // createSessionResponse is returned once, to the creator, and is the only
@@ -50,6 +53,10 @@ type createSessionResponse struct {
 	// returned here so the host CLI can print the ssh command without a second
 	// round trip at exactly the moment it needs to.
 	SSHPort int `json:"ssh_port,omitempty"`
+	// SSHHost is the name guests should ssh to, when it differs from the one
+	// the host reached the API on — an HTTP proxy that cannot carry arbitrary
+	// TCP ports forces SSH onto a separate name.
+	SSHHost string `json:"ssh_host,omitempty"`
 }
 
 // sessionResponse is the public view of a session: no credentials.
@@ -76,6 +83,8 @@ type API struct {
 
 	// sshPort is 0 when SSH joins are disabled.
 	sshPort int
+	// sshHost is the name to advertise, empty when it matches the API's.
+	sshHost string
 
 	// createLimit throttles session creation per source; nil disables it.
 	createLimit *rateLimiter
@@ -118,6 +127,10 @@ func NewAPI(sessions *session.Manager, bridges *session.Bridges, log *slog.Logge
 // advertisement.
 func (a *API) SetSSHPort(port int) { a.sshPort = port }
 
+// SetSSHHost records the name to advertise for SSH joins, for when it differs
+// from the one the API is reached on.
+func (a *API) SetSSHHost(host string) { a.sshHost = host }
+
 // SetCreatePolicy configures who may create sessions and how often.
 func (a *API) SetCreatePolicy(cfg Config) {
 	a.createLimit = newRateLimiter(cfg.CreateRatePerMin, cfg.CreateBurst, nil)
@@ -154,6 +167,7 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Sessions: a.sessions.Len(),
 		Tunnels:  a.bridges.Len(),
 		SSHPort:  a.sshPort,
+		SSHHost:  a.sshHost,
 	})
 }
 
@@ -221,6 +235,7 @@ func (a *API) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   s.ExpiresAt.UTC(),
 		ExpiresIn:   int(s.ExpiresAt.Sub(a.now()).Seconds()),
 		SSHPort:     a.sshPort,
+		SSHHost:     a.sshHost,
 	})
 }
 
