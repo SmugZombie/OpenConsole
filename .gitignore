@@ -18,6 +18,10 @@ web/.vite/
 # Editor / OS
 .DS_Store
 .vscode/
+# Also the project brief, which lives here under the same name and is not
+# something the repository needs to carry.
+.idea
+.idea/
 
 # Go
 *.test
