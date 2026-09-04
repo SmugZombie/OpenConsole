@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/SmugZombie/OpenConsole/internal/e2e"
 	"github.com/SmugZombie/OpenConsole/internal/protocol"
 	"github.com/SmugZombie/OpenConsole/internal/terminal"
 	"github.com/SmugZombie/OpenConsole/internal/tunnel"
@@ -69,6 +70,14 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 		return 1, err
 	}
 
+	// The key is generated here and never sent anywhere. The relay learns the
+	// session ID and the tokens because it authenticates connections with
+	// them; it is not told this, so it routes ciphertext it cannot read.
+	ticket, crypt, err := newTicketAndKeys(cfg, sess)
+	if err != nil {
+		return 1, err
+	}
+
 	cols, rows := terminalSize(stdout)
 
 	term, err := terminal.Start(terminal.Options{
@@ -88,16 +97,17 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 		Token:     sess.HostToken,
 		Cols:      cols,
 		Rows:      rows,
+		// Declared so the relay can turn away an SSH guest, which has no way
+		// to decrypt. A relay that ignores this just hands that guest bytes it
+		// cannot read.
+		Encrypted: crypt.enabled(),
 	})
 	if err != nil {
 		return 1, fmt.Errorf("connecting to relay: %w", err)
 	}
 	defer conn.Close("host exited")
 
-	printBanner(stderr, cfg, sess,
-		api.JoinURL(sess.SessionID, sess.GuestToken),
-		api.JoinURL(sess.SessionID, sess.ViewerToken),
-		api.SSHCommand(sess.SessionID, sess.SSHPort))
+	printBanner(stderr, cfg, sess, ticket, api)
 
 	restore, err := rawTerminal(stdin)
 	if err != nil {
@@ -105,7 +115,8 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 	}
 	defer restore()
 
-	code, shareErr := runShare(ctx, term, conn, stdin, stdout, cfg.AllowForward, forwardLogger(stderr))
+	code, shareErr := runShare(ctx, term, conn, stdin, stdout,
+		cfg.AllowForward, forwardLogger(stderr), crypt)
 
 	restore()
 	// A mid-session failure was already reported on the terminal as it
@@ -125,7 +136,7 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 //	guest keyboard -> pty
 //	pty           -> local screen
 //	pty           -> relay -> guests
-func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, stdin, stdout *os.File, allow Allowlist, logger *slog.Logger) (int, error) {
+func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, stdin, stdout *os.File, allow Allowlist, logger *slog.Logger, crypt crypter) (int, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -141,6 +152,7 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 	}
 
 	out := newSender(conn, outboundQueue)
+	out.crypt = crypt
 	go out.run(ctx)
 
 	// Forwarding is off unless the host asked for it. When it is on, the host
@@ -173,6 +185,14 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 				out.fail(err)
 				return
 			}
+			// Decrypting here, once, covers the terminal and every
+			// forwarded connection: both arrive as DATA frames.
+			f, derr := crypt.inbound(f)
+			if derr != nil {
+				out.fail(derr)
+				return
+			}
+
 			// Anything on a non-zero channel is a forwarded connection, not
 			// the terminal.
 			if !f.Channel.IsTerminal() {
@@ -268,6 +288,49 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 	return code, out.err()
 }
 
+// newTicketAndKeys builds the credential the host hands out, and the
+// encryption state that matches it.
+//
+// Encryption is on unless it was turned off, because a default that has to be
+// asked for protects nobody. Turning it off is a real choice with a real
+// reason — a stock ssh client cannot decrypt — so the flag exists and says so.
+func newTicketAndKeys(cfg Config, sess *Session) (Ticket, crypter, error) {
+	ticket := Ticket{SessionID: sess.SessionID, Token: sess.GuestToken}
+	if cfg.NoEncryption {
+		return ticket, crypter{}, nil
+	}
+
+	root, err := e2e.NewRootKey()
+	if err != nil {
+		return Ticket{}, crypter{}, err
+	}
+	session, err := e2e.FromRootKey(sess.SessionID, root)
+	if err != nil {
+		return Ticket{}, crypter{}, err
+	}
+
+	ticket.Key, ticket.KeyKind = root, KeyRoot
+	return ticket, hostCrypter(session), nil
+}
+
+// viewerTicket is the watch-only credential for the same session.
+//
+// It carries the read direction's key and not the root, so a viewer cannot
+// derive the key that produces input. Read-only stops being a rule the relay
+// applies and becomes something the arithmetic will not do.
+func viewerTicket(full Ticket, sess *Session) (Ticket, error) {
+	t := Ticket{SessionID: sess.SessionID, Token: sess.ViewerToken}
+	if !full.Encrypted() {
+		return t, nil
+	}
+	vk, err := e2e.ViewerKey(sess.SessionID, full.Key)
+	if err != nil {
+		return Ticket{}, err
+	}
+	t.Key, t.KeyKind = vk, KeyViewer
+	return t, nil
+}
+
 // forwardLogger sends forwarding activity to the host's own terminal.
 //
 // The host opted into forwarding, so they should be able to see it being used.
@@ -306,6 +369,9 @@ func closeReason(f protocol.Frame) error {
 type sender struct {
 	conn tunnel.Conn
 	q    chan protocol.Frame
+	// crypt seals DATA on the way out. Doing it in the one goroutine that
+	// writes to the tunnel means no frame can leave unencrypted by accident.
+	crypt crypter
 
 	mu      sync.Mutex
 	failure error
@@ -359,7 +425,12 @@ func (s *sender) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case f := <-s.q:
-			if err := s.conn.Send(ctx, f); err != nil {
+			sealed, err := s.crypt.outbound(f)
+			if err != nil {
+				s.fail(err)
+				return
+			}
+			if err := s.conn.Send(ctx, sealed); err != nil {
 				s.fail(err)
 				return
 			}

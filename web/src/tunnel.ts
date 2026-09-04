@@ -6,7 +6,9 @@
  * connection states, never in WebSocket frames.
  */
 
+import { CryptoError, type Session } from './crypto';
 import {
+  CHANNEL_CONTROL,
   PROTOCOL_VERSION,
   ProtocolError,
   decodeBinary,
@@ -56,6 +58,8 @@ export interface TunnelOptions {
   cols: number;
   rows: number;
   handlers: TunnelHandlers;
+  /** Encryption keys from the ticket, absent for an unencrypted session. */
+  crypto?: Session | undefined;
 }
 
 /** Maps the relay's error codes onto something worth reading. */
@@ -89,6 +93,14 @@ export class Tunnel {
   private opened = false;
   private readOnly = false;
   private ending: Ending | null = null;
+
+  /**
+   * Decryption is asynchronous, and terminal output must not be reordered:
+   * two frames decrypted concurrently could finish in either order and put
+   * the wrong bytes on the screen. Chaining every frame onto this promise
+   * keeps them in the order they arrived.
+   */
+  private inbound: Promise<void> = Promise.resolve();
 
   constructor(opts: TunnelOptions) {
     this.opts = opts;
@@ -129,19 +141,36 @@ export class Tunnel {
     };
 
     ws.onmessage = (ev: MessageEvent) => {
+      let frame: Frame;
       try {
-        this.handle(
+        frame =
           typeof ev.data === 'string'
             ? decodeControl(ev.data)
-            : decodeBinary(ev.data as ArrayBuffer),
-        );
+            : decodeBinary(ev.data as ArrayBuffer);
       } catch (err) {
-        if (err instanceof ProtocolError) {
-          this.fail(`Protocol error: ${err.message}`);
-        } else {
+        this.fail(
+          err instanceof ProtocolError ? `Protocol error: ${err.message}` : String(err),
+        );
+        return;
+      }
+
+      // Queued rather than awaited inline, so frames reach the terminal in
+      // the order they arrived even though decryption is asynchronous.
+      this.inbound = this.inbound.then(async () => {
+        try {
+          await this.handle(frame);
+        } catch (err) {
+          if (err instanceof CryptoError) {
+            // Failing closed: showing whatever bytes arrived would be
+            // showing something the relay could have chosen.
+            this.fail(
+              'A frame did not decrypt. The link may be wrong, or the relay may be interfering.',
+            );
+            return;
+          }
           this.fail(String(err));
         }
-      }
+      });
     };
 
     ws.onerror = () => {
@@ -167,7 +196,7 @@ export class Tunnel {
     };
   }
 
-  private handle(frame: Frame): void {
+  private async handle(frame: Frame): Promise<void> {
     const { handlers } = this.opts;
 
     switch (frame.type) {
@@ -180,15 +209,39 @@ export class Tunnel {
         // Anything other than an explicit "guest" is treated as read-only:
         // erring towards the narrower capability means a relay that says
         // something unexpected cannot accidentally hand over the keyboard.
-        this.readOnly = ack.role !== 'guest';
+        // A link that lost its key would otherwise fill the terminal with
+        // ciphertext. Say what happened; a truncated link is the usual cause.
+        if (ack.encrypted && !this.opts.crypto) {
+          this.fail(
+            'This session is end-to-end encrypted but this link carries no key. ' +
+              'Ask for the whole link — the part after the # has two halves.',
+          );
+          return;
+        }
+        if (!ack.encrypted && this.opts.crypto) {
+          this.fail(
+            'This link carries a key but the relay says the session is not encrypted. ' +
+              'Do not continue: someone may be trying to read this terminal.',
+          );
+          return;
+        }
+
+        // A ticket with no writing key is read-only whatever the relay says,
+        // so the narrower of the two answers wins.
+        this.readOnly = ack.role !== 'guest' || this.opts.crypto?.canWrite === false;
         handlers.onAccess(this.readOnly);
         handlers.onStatus('connected');
         break;
       }
 
-      case 'DATA':
-        handlers.onData(frame.payload as Uint8Array);
+      case 'DATA': {
+        const payload = frame.payload as Uint8Array;
+        const crypto = this.opts.crypto;
+        handlers.onData(
+          crypto ? await crypto.openFromHost(frame.channel, payload) : payload,
+        );
         break;
+      }
 
       case 'RESIZE': {
         const size = frame.payload as ResizePayload;
@@ -233,10 +286,26 @@ export class Tunnel {
     // The relay drops a viewer's input anyway; not sending it keeps the
     // intent visible here and saves the round trip.
     if (this.readOnly) return;
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+
+    const crypto = this.opts.crypto;
+    if (!crypto) {
       this.send(encodeData(bytes));
+      return;
     }
+    // Keystrokes are sealed in the order they were typed, for the same reason
+    // output is decrypted in order.
+    this.outbound = this.outbound
+      .then(async () => {
+        const sealed = await crypto.sealToHost(CHANNEL_CONTROL, bytes);
+        this.send(encodeData(sealed));
+      })
+      .catch(() => {
+        /* a closed session; the read side reports it */
+      });
   }
+
+  private outbound: Promise<void> = Promise.resolve();
 
   private send(payload: string | Uint8Array): void {
     this.ws?.send(payload);

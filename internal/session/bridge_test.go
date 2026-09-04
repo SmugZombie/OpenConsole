@@ -409,3 +409,10 @@ func (b *Bridge) scrollLen() int {
 	defer b.mu.Unlock()
 	return b.scroll.Len()
 }
+
+// scrollFrames exposes the retained frame count for tests.
+func (b *Bridge) scrollFrames() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.scroll.Count()
+}

@@ -60,6 +60,8 @@ export interface OpenPayload {
   token?: string;
   cols?: number;
   rows?: number;
+  /** Set by the relay when the host declared end-to-end encryption. */
+  encrypted?: boolean;
 }
 
 /** Payload of a RESIZE frame. */

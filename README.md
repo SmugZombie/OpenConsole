@@ -40,11 +40,11 @@ $ ▏
 Send the link, and they are in your terminal — no client to install, nothing to
 sign up for.
 
-> **Status: Phase 5.** Terminal sharing works end to end — from another
+> **Status: Phase 6 — the roadmap is complete.** Terminal sharing works end to end — from another
 > terminal, a browser, or a stock ssh client. Guests can be read-only, and can
-> forward a TCP port when the host allows it. End-to-end encryption is not built
-> yet, so the relay sees plaintext. Session creation is unauthenticated, so run
-> your relay on a trusted network or behind an authenticating proxy. See
+> forward a TCP port when the host allows it. Terminal contents are encrypted
+> end to end, so the relay cannot read them. Session creation is still
+> unauthenticated by default — see [Security](#security). See
 > [the roadmap](docs/architecture.md#roadmap).
 
 ## How it works
@@ -268,6 +268,7 @@ rather than guessed at.
 | `-local` | — | — | Shorthand for `-server http://localhost:8080` |
 | `-shell` | — | `$SHELL` | Shell to run |
 | `-read-only` | — | — | Join without typing (`join` only) |
+| `-no-encryption` | — | — | Share unencrypted, so `ssh` clients can join |
 | `-allow-forward` | — | none | Targets guests may reach, or `any` (share only) |
 | `-L` | — | — | Forward a local port, `[bind:]port:host:hostport` (join only, repeatable) |
 | `-version` | — | — | Print version and exit |
@@ -343,6 +344,14 @@ working UI. Rebuild and commit it alongside any change under `web/src`. See
   since version 1, so forwarding was added without a wire-format break. Guests
   number their own channels and the relay translates, or one guest's database
   connection would receive another's bytes.
+- **The relay routes what it cannot read.** Terminal contents are encrypted
+  between host and guests. Everything the relay holds it was *given*, because it
+  authenticates connections with it, so the key is one more secret the host
+  never sends: it lives only in the ticket and in the URL fragment. There is no
+  key exchange, and so nothing to interpose on.
+- **Read-only is arithmetic, not a rule.** A watch-only ticket carries only the
+  key for the direction that reads, so it cannot produce input the host will
+  accept even if the relay were willing to forward it.
 - **Capability lives in the token, not in a flag.** A viewer link is read-only
   because the relay reads the token and says so; no client is trusted to ask for
   less than it could take. The acknowledgement reports what was granted, so a
@@ -369,10 +378,12 @@ Not yet suitable for exposure to the public internet:
 
 - Session creation is unauthenticated by default. It is rate limited and capped,
   and `OPENCONSOLE_CREATE_TOKEN` closes it entirely, but an open relay is open.
-- The relay sees plaintext terminal traffic — it can read and inject keystrokes.
-  End-to-end encryption is roadmap, so "self-hosted" is doing real work here.
-  Clients default to `https://openconsole.dev`; run your own relay and set
-  `OPENCONSOLE_SERVER` if you would rather not trust someone else's.
+- Terminal contents are encrypted end to end, so a relay cannot read or inject
+  keystrokes. Its *shape* is still visible: frame sizes, channel numbers and
+  timing. A relay can also drop frames, which breaks a session rather than
+  falsifying it.
+- `-no-encryption` exists for one reason — a stock `ssh` client cannot decrypt —
+  and hands the relay everything encryption withholds.
 - A link is a bearer capability and cannot be revoked short of ending the
   session. Hand out the watch-only link when someone only needs to look.
 - SSH auth is bounded per connection but not across them; nothing rate-limits

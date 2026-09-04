@@ -139,6 +139,12 @@ type Open struct {
 	// Cols and Rows are the initial terminal size, if known.
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
+	// Encrypted is set by a host whose terminal traffic is end-to-end
+	// encrypted. The relay cannot verify it and does not need to: it is there
+	// so the relay can turn away a stock ssh client, which has nowhere to put
+	// a key and no way to use one. A relay that ignores the flag simply hands
+	// such a guest bytes it cannot read.
+	Encrypted bool `json:"encrypted,omitempty"`
 }
 
 // Resize is the JSON body of a TypeResize frame.

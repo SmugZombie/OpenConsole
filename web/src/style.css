@@ -320,6 +320,18 @@ code {
   text-transform: uppercase;
 }
 
+/* Whether a terminal is encrypted is not a detail to bury: green when the
+   relay cannot read it, amber when it can. */
+.badge-ok {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.badge-warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 #terminal-wrap {
   flex: 1;
   min-height: 0;

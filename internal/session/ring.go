@@ -1,70 +1,66 @@
 package session
 
-// ringBuffer keeps the most recent size bytes written to it.
+// frameRing keeps the most recent terminal output for replay to a guest that
+// joins mid-session, so it sees a screen rather than a blank rectangle.
 //
-// It backs terminal scrollback replay for joining guests: writes happen on
-// every chunk of terminal output, reads only when someone joins, so it favours
-// cheap appends and copies on read.
+// It stores whole payloads rather than a byte stream, and replays them as the
+// separate frames they arrived as. That distinction is not cosmetic: with
+// end-to-end encryption each frame is independently sealed, and concatenating
+// two of them produces something that will never decrypt. A byte-oriented
+// buffer works perfectly for plaintext and silently breaks every encrypted
+// session, which is exactly the kind of bug that reaches production.
 //
 // It is not safe for concurrent use; the bridge holds its mutex around access.
-type ringBuffer struct {
-	buf   []byte // allocated lazily, always len == size once allocated
-	size  int
-	start int // index of the oldest byte
-	n     int // bytes currently held, never more than size
+type frameRing struct {
+	// maxBytes caps the total payload retained, not the number of frames: a
+	// terminal emits both single keystrokes and screen-sized bursts.
+	maxBytes int
+	bytes    int
+	frames   [][]byte
 }
 
-func newRingBuffer(size int) *ringBuffer {
-	return &ringBuffer{size: size}
+func newFrameRing(maxBytes int) *frameRing {
+	return &frameRing{maxBytes: maxBytes}
 }
 
-// Write appends p, discarding the oldest bytes that no longer fit.
-func (r *ringBuffer) Write(p []byte) {
-	if r.size <= 0 || len(p) == 0 {
-		return
-	}
-	if r.buf == nil {
-		// Allocated on first write so an idle session costs nothing.
-		r.buf = make([]byte, r.size)
-	}
-
-	// A write at least as large as the buffer replaces it entirely; only its
-	// tail can survive.
-	if len(p) >= r.size {
-		copy(r.buf, p[len(p)-r.size:])
-		r.start, r.n = 0, r.size
+// Add appends a payload, dropping whole frames from the front until the total
+// fits. p is retained, so callers must not reuse it.
+func (r *frameRing) Add(p []byte) {
+	if r.maxBytes <= 0 || len(p) == 0 {
 		return
 	}
 
-	end := (r.start + r.n) % r.size
-	c := copy(r.buf[end:], p)
-	if c < len(p) {
-		copy(r.buf, p[c:]) // wrapped
+	// A single frame larger than the whole buffer replaces everything. It
+	// cannot be trimmed: half of a sealed frame is not a frame.
+	if len(p) >= r.maxBytes {
+		r.frames = [][]byte{p}
+		r.bytes = len(p)
+		return
 	}
 
-	if r.n+len(p) > r.size {
-		// The oldest bytes were overwritten; slide start past them.
-		r.start = (r.start + (r.n + len(p) - r.size)) % r.size
-		r.n = r.size
-	} else {
-		r.n += len(p)
+	r.frames = append(r.frames, p)
+	r.bytes += len(p)
+
+	for r.bytes > r.maxBytes && len(r.frames) > 0 {
+		r.bytes -= len(r.frames[0])
+		r.frames[0] = nil // let the payload be collected
+		r.frames = r.frames[1:]
 	}
 }
 
-// Bytes returns a copy of the contents, oldest first.
-func (r *ringBuffer) Bytes() []byte {
-	if r.n == 0 {
+// Frames returns the retained payloads, oldest first. The slice is a copy; the
+// payloads are not, and must not be modified.
+func (r *frameRing) Frames() [][]byte {
+	if len(r.frames) == 0 {
 		return nil
 	}
-	out := make([]byte, 0, r.n)
-	if end := r.start + r.n; end <= r.size {
-		out = append(out, r.buf[r.start:end]...)
-	} else {
-		out = append(out, r.buf[r.start:]...)
-		out = append(out, r.buf[:end-r.size]...)
-	}
+	out := make([][]byte, len(r.frames))
+	copy(out, r.frames)
 	return out
 }
 
 // Len reports how many bytes are retained.
-func (r *ringBuffer) Len() int { return r.n }
+func (r *frameRing) Len() int { return r.bytes }
+
+// Count reports how many frames are retained.
+func (r *frameRing) Count() int { return len(r.frames) }

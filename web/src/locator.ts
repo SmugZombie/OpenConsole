@@ -1,3 +1,5 @@
+import { KEY_SIZE, decodeBase32, encodeBase32, type KeyKind } from './crypto';
+
 /**
  * Working out which session a page is for, and with what credential.
  *
@@ -8,6 +10,9 @@
 export interface SessionLocator {
   sessionId: string;
   token: string;
+  /** The encryption key, absent when the session is not encrypted. */
+  key?: Uint8Array;
+  keyKind?: KeyKind;
 }
 
 /**
@@ -25,23 +30,72 @@ export function parseSessionURL(
 ): SessionLocator | null {
   const m = /^\/s\/([^/]+)\/?$/.exec(pathname);
   if (!m || !m[1]) return null;
-  const token = decodeURIComponent(hash.replace(/^#/, '')).trim();
+
+  const fragment = decodeURIComponent(hash.replace(/^#/, '')).trim();
+  if (!fragment) return null;
+
+  const sessionId = decodeURIComponent(m[1]);
+  const [token, keyField] = splitOnce(fragment);
   if (!token) return null;
-  return { sessionId: decodeURIComponent(m[1]), token };
+  if (keyField === undefined) {
+    return { sessionId, token };
+  }
+  const parsed = parseKeyField(keyField);
+  if (!parsed) return null;
+  return { sessionId, token, key: parsed.key, keyKind: parsed.kind };
 }
 
-/** Splits a `session.token` ticket, the same format the CLI prints. */
+/**
+ * Splits a ticket, the same format the CLI prints:
+ *
+ *   <session>.<token>            no encryption
+ *   <session>.<token>.k<key>     full access
+ *   <session>.<token>.v<key>     watch only
+ */
 export function parseTicket(raw: string): SessionLocator | null {
-  const s = raw.trim();
-  const dot = s.indexOf('.');
-  if (dot <= 0 || dot === s.length - 1) return null;
-  const sessionId = s.slice(0, dot);
-  const token = s.slice(dot + 1);
-  if (token.includes('.')) return null;
-  return { sessionId, token };
+  const fields = raw.trim().split('.');
+  if (fields.length < 2 || fields.length > 3) return null;
+
+  const [sessionId, token, keyField] = fields;
+  if (!sessionId || !token) return null;
+  if (keyField === undefined) {
+    return { sessionId, token };
+  }
+  const parsed = parseKeyField(keyField);
+  if (!parsed) return null;
+  return { sessionId, token, key: parsed.key, keyKind: parsed.kind };
 }
 
-/** Builds the page URL a guest opens, given a ticket's two halves. */
+/**
+ * Reads the letter and the encoded key.
+ *
+ * The letter is in the ticket so a client knows what it holds without asking
+ * the relay, which must not be able to talk a guest into misusing its own key.
+ */
+function parseKeyField(field: string): { key: Uint8Array; kind: KeyKind } | null {
+  const kind = field[0] === 'k' ? 'root' : field[0] === 'v' ? 'viewer' : null;
+  if (!kind) return null;
+  try {
+    const key = decodeBase32(field.slice(1));
+    if (key.length !== KEY_SIZE) return null;
+    return { key, kind };
+  } catch {
+    return null;
+  }
+}
+
+/** Splits on the first '.', returning the tail only when there is one. */
+function splitOnce(s: string): [string, string | undefined] {
+  const i = s.indexOf('.');
+  if (i < 0) return [s, undefined];
+  return [s.slice(0, i), s.slice(i + 1)];
+}
+
+/** Builds the page URL a guest opens, preserving any key. */
 export function sessionURL(locator: SessionLocator): string {
-  return `/s/${encodeURIComponent(locator.sessionId)}#${encodeURIComponent(locator.token)}`;
+  const fragment =
+    locator.key && locator.keyKind
+      ? `${locator.token}.${locator.keyKind === 'root' ? 'k' : 'v'}${encodeBase32(locator.key)}`
+      : locator.token;
+  return `/s/${encodeURIComponent(locator.sessionId)}#${fragment}`;
 }

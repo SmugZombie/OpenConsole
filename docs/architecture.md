@@ -290,7 +290,36 @@ whenever it changes, and pick a font size that makes that grid fit their window
 — they never resize someone else's real terminal. A `RESIZE` from a guest is
 ignored by the relay.
 
-## SSH joins
+## End-to-end encryption
+
+Terminal contents are encrypted between the host and its guests. The relay
+routes ciphertext it has no way to read and cannot forge, so running someone
+else's relay stops meaning trusting them with your terminal.
+
+The mechanism is in [protocol.md](protocol.md#4-the-relay-routes-what-it-cannot-read);
+what matters here is where the key lives. Everything the relay holds it was
+given, because it authenticates connections with it, so the host generates one
+more secret and never sends it: it exists only in the ticket, which travels
+out-of-band, and in the URL fragment, which browsers do not transmit. There is
+no key exchange, and so nothing to interpose on.
+
+Encryption is on unless `-no-encryption` is passed. A default that has to be
+asked for protects nobody.
+
+### Two consequences worth knowing
+
+**A stock ssh client cannot join an encrypted session.** It has nowhere to put a
+key and no way to use one. The host declares encryption in its OPEN frame and
+the relay turns SSH guests away with an explanation rather than a screen of
+noise. Sharing with `-no-encryption` allows them, at the cost of the relay being
+able to read and type.
+
+**Scrollback replay stores frames, not bytes.** The buffer that shows a joining
+guest what is already on screen used to concatenate output into a byte stream.
+Each encrypted frame is sealed independently, so two of them joined together
+will never decrypt — the buffer now keeps whole frames and replays them as the
+frames they were. This is the kind of thing that works perfectly in every
+plaintext test and breaks every encrypted session.
 
 A guest can join with the ssh client they already have:
 
@@ -438,16 +467,18 @@ fails to connect.
 | 3 | Browser client: Vite + TypeScript + xterm.js, embedded in the relay. | ✅ |
 | 4 | Native SSH access (`ssh <session>@relay`). | ✅ |
 | 5 | Read-only guests; multiplexed channels for TCP forwarding. | ✅ |
-| 6 | End-to-end encryption between host and guest. | next |
+| 6 | End-to-end encryption between host and guest. | ✅ |
 
 ## Known gaps
 
 1. **Tokens are bearer credentials in cleartext.** TLS is assumed to be
    terminated by a proxy in front of the relay. This is documented in
    `deploy/README.md` but not enforced by the code.
-2. **The relay sees plaintext terminal traffic.** Anyone who controls the relay
-   can read and inject keystrokes. End-to-end encryption is roadmap, and until
-   it exists "self-hosted" is doing real security work.
+2. **Traffic shape is visible to the relay.** Contents are encrypted, but frame
+   sizes, channel numbers and timing are not. A relay can tell that a session is
+   busy and how large each burst is, and can drop or reorder frames — which
+   breaks a session rather than falsifying it. Padding and cover traffic are not
+   attempted.
 3. **A link cannot be revoked** short of ending the session, and there is no
    per-guest identity or audit trail.
 4. **Single-process only.** Sessions and bridges live in one process's memory,

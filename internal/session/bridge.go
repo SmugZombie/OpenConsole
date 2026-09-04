@@ -78,8 +78,13 @@ type Bridge struct {
 	closed   bool
 	cols     uint16
 	rows     uint16
-	scroll   *ringBuffer
+	scroll   *frameRing
 	onClosed func()
+
+	// encrypted records what the host declared. The relay cannot check it and
+	// does not need to: it is here so an SSH guest, which has no way to
+	// decrypt, is turned away rather than shown noise.
+	encrypted bool
 
 	// forwards holds every open TCP stream, keyed by the relay-assigned
 	// channel ID used toward the host. nextChan only ever increases: reusing
@@ -135,7 +140,7 @@ func newBridge(id string, log *slog.Logger) *Bridge {
 		id:       id,
 		log:      log,
 		guests:   make(map[*guestConn]struct{}),
-		scroll:   newRingBuffer(scrollbackBytes),
+		scroll:   newFrameRing(scrollbackBytes),
 		forwards: make(map[protocol.ChannelID]*forward),
 	}
 }
@@ -170,6 +175,23 @@ func (b *Bridge) Size() (cols, rows uint16) {
 // and the bridge is closed, because there is nothing to attach to without the
 // host.
 func (b *Bridge) ServeHost(ctx context.Context, s Stream, cols, rows uint16) error {
+	return b.serveHost(ctx, s, cols, rows, false)
+}
+
+// ServeHostEncrypted is ServeHost for a host whose traffic is end-to-end
+// encrypted.
+func (b *Bridge) ServeHostEncrypted(ctx context.Context, s Stream, cols, rows uint16, encrypted bool) error {
+	return b.serveHost(ctx, s, cols, rows, encrypted)
+}
+
+// Encrypted reports whether the host declared end-to-end encryption.
+func (b *Bridge) Encrypted() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.encrypted
+}
+
+func (b *Bridge) serveHost(ctx context.Context, s Stream, cols, rows uint16, encrypted bool) error {
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -181,6 +203,7 @@ func (b *Bridge) ServeHost(ctx context.Context, s Stream, cols, rows uint16) err
 	}
 	b.host = s
 	b.cols, b.rows = cols, rows
+	b.encrypted = encrypted
 	b.mu.Unlock()
 
 	b.log.Info("host attached", slog.String("session_id", b.id))
@@ -208,7 +231,7 @@ func (b *Bridge) ServeHost(ctx context.Context, s Stream, cols, rows uint16) err
 			// goroutines.
 			payload := append([]byte(nil), f.Payload...)
 			b.mu.Lock()
-			b.scroll.Write(payload)
+			b.scroll.Add(payload)
 			b.mu.Unlock()
 			b.broadcast(protocol.Frame{Type: protocol.TypeData, Channel: f.Channel, Payload: payload})
 
@@ -271,7 +294,7 @@ func (b *Bridge) ServeGuest(ctx context.Context, s Stream, opts GuestOptions) er
 	}
 	b.guests[g] = struct{}{}
 	cols, rows := b.cols, b.rows
-	backlog := b.scroll.Bytes()
+	backlog := b.scroll.Frames()
 	n := len(b.guests)
 	b.mu.Unlock()
 
@@ -320,8 +343,14 @@ func (b *Bridge) ServeGuest(ctx context.Context, s Stream, opts GuestOptions) er
 			return err
 		}
 	}
-	if len(backlog) > 0 {
-		if err := sendBounded(ctx, s, protocol.Frame{Type: protocol.TypeData, Payload: backlog}); err != nil {
+	// Replayed one frame per frame. Encrypted payloads are sealed
+	// individually, so joining them into one would produce something the
+	// guest could never decrypt.
+	for _, payload := range backlog {
+		if err := sendBounded(ctx, s, protocol.Frame{
+			Type:    protocol.TypeData,
+			Payload: payload,
+		}); err != nil {
 			return err
 		}
 	}

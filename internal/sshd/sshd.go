@@ -364,6 +364,18 @@ func (s *Server) handleSession(ctx context.Context, sessionID string, access ses
 		return
 	}
 
+	// A stock ssh client has nowhere to put a key and no way to use one, so an
+	// encrypted session would hand it a screen of noise. Say what is happening
+	// instead.
+	if bridge.Encrypted() {
+		fmt.Fprint(ch.Stderr(),
+			"openconsole: this session is end-to-end encrypted, which an ssh client cannot read.\r\n"+
+				"Join from a browser or with `openconsole join`, or ask the host to share\r\n"+
+				"with -no-encryption.\r\n")
+		sendExitStatus(ch, 1)
+		return
+	}
+
 	if access.CanWrite() {
 		fmt.Fprint(ch, "openconsole: attached. The host ends the session.\r\n")
 	} else {

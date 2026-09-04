@@ -41,6 +41,12 @@ type Config struct {
 	// This is a local flag on purpose. The shell is chosen by the person at
 	// the keyboard; taking it from the relay would be remote code execution.
 	Shell string
+	// NoEncryption turns off end-to-end encryption for a shared terminal.
+	//
+	// The one real reason to: a stock ssh client cannot decrypt, so SSH guests
+	// need an unencrypted session. The cost is that the relay can read and
+	// inject keystrokes, which is why it is not the default.
+	NoEncryption bool
 	// RelayToken is the secret a private relay requires to create a session.
 	RelayToken string
 	// AllowForward is the host's list of targets guests may reach, as
@@ -79,6 +85,8 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 		"share only: comma-separated host:port targets guests may reach, or \"any\" (default none)")
 	var forwards forwardList
 	fs.Var(&forwards, "L", "join only: forward a local port, [bind:]port:host:hostport (repeatable)")
+	fs.BoolVar(&cfg.NoEncryption, "no-encryption", false,
+		"share without end-to-end encryption, so stock ssh clients can join")
 	fs.BoolVar(&cfg.ReadOnly, "read-only", false, "join without typing (join only)")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "print version and exit")
 	fs.Usage = func() {

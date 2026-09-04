@@ -156,11 +156,14 @@ func (c *Client) SSHCommand(sessionID string, sshPort int) string {
 
 // JoinURL is the page a guest opens in a browser.
 //
-// The token goes in the URL *fragment*. Browsers never send a fragment to a
-// server, so the credential stays out of the relay's access log, out of any
-// proxy in between, and out of Referer headers — while still surviving a
-// copy-paste of the whole link. That is what makes this a deliberate
-// capability URL rather than a secret leaked into a URL.
-func (c *Client) JoinURL(sessionID, guestToken string) string {
-	return c.baseURL + "/s/" + url.PathEscape(sessionID) + "#" + url.PathEscape(guestToken)
+// The token and the encryption key go in the URL *fragment*. Browsers never
+// send a fragment to a server, so neither reaches the relay's access log, any
+// proxy in between, or a Referer header — while both survive a copy-paste of
+// the whole link.
+//
+// For the token that makes this a deliberate capability URL. For the key it is
+// load-bearing: a relay that saw it could read the terminal, so the fragment is
+// the reason a browser can be given a key at all.
+func (c *Client) JoinURL(t Ticket) string {
+	return c.baseURL + "/s/" + url.PathEscape(t.SessionID) + "#" + t.Fragment()
 }

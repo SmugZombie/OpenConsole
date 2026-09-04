@@ -12,6 +12,7 @@ import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
 import './style.css';
+import { Session } from './crypto';
 import {
   parseSessionURL,
   parseTicket,
@@ -68,7 +69,7 @@ function showLanding(): void {
 
 /* --- session -------------------------------------------------------------- */
 
-function showSession(locator: SessionLocator): void {
+async function showSession(locator: SessionLocator): Promise<void> {
   el('session').hidden = false;
   el('session-label').textContent = locator.sessionId;
 
@@ -162,10 +163,29 @@ function showSession(locator: SessionLocator): void {
     }
   }
 
+  // Built once, from the ticket. If the link carries no key the session is not
+  // encrypted, and the badge says so rather than staying quiet about it.
+  let crypto: Session | undefined;
+  if (locator.key && locator.keyKind) {
+    try {
+      crypto = await Session.fromTicketKey(locator.sessionId, locator.key, locator.keyKind);
+    } catch (err) {
+      setStatus('error', `This link's key is not usable: ${String(err)}`);
+      return;
+    }
+  }
+  el('privacy-label').textContent = crypto ? 'encrypted' : 'not encrypted';
+  el('privacy-label').className = crypto ? 'badge badge-ok' : 'badge badge-warn';
+  el('privacy-label').hidden = false;
+  el('privacy-label').title = crypto
+    ? 'End-to-end encrypted. The relay routes this terminal but cannot read it.'
+    : 'Not encrypted. Whoever runs the relay can read this terminal and type into it.';
+
   let tunnel: Tunnel;
 
   function connect(): void {
     tunnel = new Tunnel({
+      crypto,
       sessionId: locator.sessionId,
       token: locator.token,
       cols: hostCols,
@@ -222,7 +242,7 @@ window.addEventListener('hashchange', () => window.location.reload());
 
 const locator = parseSessionURL(window.location.pathname, window.location.hash);
 if (locator) {
-  showSession(locator);
+  void showSession(locator);
 } else if (window.location.pathname.startsWith('/s/')) {
   // A session URL with no fragment: the link was truncated somewhere, which is
   // a common way for a chat client to break one.

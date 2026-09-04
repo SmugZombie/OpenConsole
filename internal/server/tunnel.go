@@ -101,11 +101,16 @@ func (a *API) authenticate(ctx context.Context, conn tunnel.Conn) (protocol.Open
 //
 // Its Role is the access the relay actually granted, not what the client asked
 // for, so a client learns from this whether it may type.
-func ack(ctx context.Context, conn tunnel.Conn, sess *session.Session, access session.Access) error {
+func ack(ctx context.Context, conn tunnel.Conn, sess *session.Session, access session.Access, encrypted bool) error {
 	return tunnel.SendControl(ctx, conn, protocol.TypeOpen, protocol.Open{
 		Version:   protocol.Version,
 		SessionID: sess.SessionID,
 		Role:      access.Role(),
+		// Reported so a guest whose link lost its key is told that, rather
+		// than being shown a screen of ciphertext. It is a courtesy, not a
+		// security claim: a client that holds a key needs no permission to
+		// use it, and one that holds none cannot be given it here.
+		Encrypted: encrypted,
 	})
 }
 
@@ -125,13 +130,13 @@ func (a *API) serveHostTunnel(ctx context.Context, conn tunnel.Conn, sess *sessi
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if err := ack(ctx, conn, sess, session.AccessHost); err != nil {
+	if err := ack(ctx, conn, sess, session.AccessHost, open.Encrypted); err != nil {
 		bridge.Close("host handshake failed")
 		return
 	}
 	go a.keepalive(ctx, conn)
 
-	err = bridge.ServeHost(ctx, conn, open.Cols, open.Rows)
+	err = bridge.ServeHostEncrypted(ctx, conn, open.Cols, open.Rows, open.Encrypted)
 	if err != nil && !isDisconnect(err) {
 		a.log.Info("host tunnel ended",
 			slog.String("session_id", sess.SessionID),
@@ -150,7 +155,7 @@ func (a *API) serveGuestTunnel(ctx context.Context, conn tunnel.Conn, sess *sess
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if err := ack(ctx, conn, sess, access); err != nil {
+	if err := ack(ctx, conn, sess, access, bridge.Encrypted()); err != nil {
 		return
 	}
 	go a.keepalive(ctx, conn)

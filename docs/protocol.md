@@ -72,7 +72,44 @@ closed stream cannot land on a new one.
 Flow control is **not** implemented: there are no per-channel windows. See
 [Backpressure](#backpressure) for what happens instead.
 
-### 4. Credentials travel in payloads, never in URLs
+### 4. The relay routes what it cannot read
+
+Terminal `DATA` payloads are encrypted end to end between the host and its
+guests. Everything the relay holds — the session ID and all three tokens — it
+was *given*, because it authenticates connections with them, so none of them can
+be the key. The host generates one more secret and tells nobody: it exists only
+in the ticket, which travels out-of-band, and in the URL fragment, which
+browsers never transmit.
+
+There is no key exchange, so there is nothing for the relay to interpose on.
+
+```
+root key ──HKDF(salt=session id)──┬──▶ host→guest key   (guests and viewers)
+                                  └──▶ guest→host key   (guests only)
+```
+
+A full ticket carries the root and derives both. A **viewer ticket carries only
+the host→guest key**, so a watch-only link cannot produce input the host will
+accept — read-only stops depending on the relay behaving and becomes something
+the arithmetic will not do.
+
+AES-256-GCM with a random 96-bit nonce, and HKDF-SHA256, because those are the
+two primitives available natively in both Go and WebCrypto. Shipping a
+JavaScript cipher to get a different one would swap a vetted implementation for
+an unvetted one. Nonces are random rather than counters because several guests
+share the guest→host key and would otherwise have to agree on who uses which
+counter. The frame's channel number is the additional data, so bytes from a
+forwarded connection cannot be passed off as terminal input.
+
+**Still visible to the relay:** frame types, channel numbers, message sizes and
+timing. It can also drop or reorder frames, which shows up as a broken session
+rather than a silent lie. Hiding traffic shape needs padding and cover traffic,
+which is not attempted.
+
+**Not encrypted:** control frames. The relay has to read a frame's type and
+channel to route it at all.
+
+### 5. Credentials travel in payloads, never in URLs
 
 The `OPEN` frame carries the session token in its JSON body. Query strings end
 up in server access logs, browser history, and `Referer` headers.
@@ -152,6 +189,9 @@ arbitration, which is future work.
 // The address is dialled by the *host*, on the host's machine.
 { "kind": "tcp", "host": "localhost", "port": 5432 }
 ```
+
+`DATA` payloads on an encrypted session are `nonce || ciphertext || tag`, 28
+bytes larger than the plaintext.
 
 Error codes: `unauthorized`, `session_not_found`, `session_expired`,
 `protocol_error`, `internal_error`, `unsupported_version`, `forward_denied`,

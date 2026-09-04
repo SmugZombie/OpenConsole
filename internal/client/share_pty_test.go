@@ -100,7 +100,7 @@ func TestShellSurvivesRelayFailure(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		code, err := runShare(ctx, term, dead, stdinR, stdoutW, Allowlist{}, discardLogger())
+		code, err := runShare(ctx, term, dead, stdinR, stdoutW, Allowlist{}, discardLogger(), crypter{})
 		stdoutW.Close()
 		done <- result{code, err}
 	}()

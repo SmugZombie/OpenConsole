@@ -27,10 +27,25 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	sessionID, token, err := ParseTicket(ticket)
+	parsed, err := ParseTicket(ticket)
 	if err != nil {
 		return err
 	}
+	return joinWith(ctx, cfg, parsed, stdin, stdout, stderr)
+}
+
+// joinWith attaches using an already-parsed ticket.
+func joinWith(ctx context.Context, cfg Config, parsed Ticket, stdin, stdout *os.File, stderr io.Writer) error {
+	sessionID, token := parsed.SessionID, parsed.Token
+
+	// The key never leaves this process. Whether this connection can read the
+	// terminal, or type into it, is decided here by what the ticket carries —
+	// not by anything the relay says.
+	crypt, err := parsed.E2E()
+	if err != nil {
+		return err
+	}
+	enc := guestCrypter(crypt)
 	if !isTerminal(stdin) || !isTerminal(stdout) {
 		return ErrNotATerminal
 	}
@@ -41,11 +56,13 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 	// Ask for read-only when the user did; otherwise present the ticket and
 	// let the relay decide what it is worth.
 	role := protocol.RoleGuest
-	if cfg.ReadOnly {
+	if cfg.ReadOnly || parsed.KeyKind == KeyViewer {
+		// A watch-only ticket has no key for the writing direction, so ask for
+		// the access it can actually use.
 		role = protocol.RoleViewer
 	}
 
-	conn, granted, err := openTunnel(ctx, api.TunnelURL(), protocol.Open{
+	conn, ack, err := openTunnel(ctx, api.TunnelURL(), protocol.Open{
 		SessionID: sessionID,
 		Role:      role,
 		Token:     token,
@@ -57,7 +74,28 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 	}
 	defer conn.Close("guest left")
 
-	readOnly := granted == protocol.RoleViewer
+	// A link that lost its key would otherwise fill the screen with
+	// ciphertext. Say what happened instead; a truncated link is the usual
+	// cause.
+	if ack.Encrypted && !enc.enabled() {
+		conn.Close("no key")
+		return fmt.Errorf(
+			"this session is end-to-end encrypted but your link carries no key.\n" +
+				"The ticket ends with a third part after a dot — ask for the whole thing.")
+	}
+	if enc.enabled() && !ack.Encrypted {
+		conn.Close("unexpected plaintext")
+		return fmt.Errorf(
+			"your link carries a key but the relay says this session is not encrypted.\n" +
+				"Do not continue: someone may be trying to read this terminal.")
+	}
+
+	readOnly := ack.Role == protocol.RoleViewer || (enc.enabled() && !crypt.CanWrite())
+	if enc.enabled() {
+		fmt.Fprintf(stderr, "openconsole: end-to-end encrypted; the relay cannot read this terminal\n")
+	} else {
+		fmt.Fprintf(stderr, "openconsole: NOT encrypted; whoever runs the relay can read this terminal\n")
+	}
 	if readOnly {
 		fmt.Fprintf(stderr,
 			"openconsole: joined %s read-only — you can watch, typing is ignored (Ctrl-] to detach)\n",
@@ -68,8 +106,16 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 
 	// Local listeners come up before the terminal goes raw, so a failure to
 	// bind is a plain error message rather than something lost in raw mode.
+	// Forwarded bytes are DATA frames too, so they go out through the same
+	// sealing step as keystrokes.
 	forwards := newGuestForwards(
-		func(f protocol.Frame) { _ = conn.Send(ctx, f) },
+		func(f protocol.Frame) {
+			sealed, err := enc.outbound(f)
+			if err != nil {
+				return
+			}
+			_ = conn.Send(ctx, sealed)
+		},
 		func(msg string) { fmt.Fprintf(stderr, "openconsole: %s\n", msg) },
 	)
 	defer forwards.Close()
@@ -92,7 +138,7 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 	}
 	defer restore()
 
-	err = runJoin(ctx, conn, stdin, stdout, readOnly, forwards)
+	err = runJoin(ctx, conn, stdin, stdout, readOnly, forwards, enc)
 
 	restore()
 	switch {
@@ -111,7 +157,7 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 var errDetached = errors.New("detached")
 
 // runJoin pumps keystrokes to the relay and remote output to the screen.
-func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, readOnly bool, forwards *guestForwards) error {
+func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, readOnly bool, forwards *guestForwards, enc crypter) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -127,7 +173,9 @@ func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, read
 				if i := indexByte(buf[:n], detachKey); i >= 0 {
 					// Send anything typed before the escape, then stop.
 					if i > 0 && !readOnly {
-						_ = conn.Send(ctx, protocol.NewData(buf[:i]))
+						if sealed, serr := enc.outbound(protocol.NewData(buf[:i])); serr == nil {
+							_ = conn.Send(ctx, sealed)
+						}
 					}
 					input <- errDetached
 					return
@@ -137,7 +185,12 @@ func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, read
 				// relay would drop it anyway; not sending saves a round trip
 				// and makes the intent obvious here.
 				if !readOnly {
-					if err := conn.Send(ctx, protocol.NewData(buf[:n])); err != nil {
+					sealed, serr := enc.outbound(protocol.NewData(buf[:n]))
+					if serr != nil {
+						input <- serr
+						return
+					}
+					if err := conn.Send(ctx, sealed); err != nil {
 						input <- err
 						return
 					}
@@ -155,6 +208,14 @@ func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, read
 	go func() {
 		for {
 			f, err := conn.Recv(ctx)
+			if err != nil {
+				output <- err
+				return
+			}
+
+			// One decryption point for the terminal and every forwarded
+			// connection alike.
+			f, err = enc.inbound(f)
 			if err != nil {
 				output <- err
 				return

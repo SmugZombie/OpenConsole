@@ -1,0 +1,39 @@
+{
+  "cases": [
+    {
+      "channel": 0,
+      "goHostSealed": "cd9c1c74605651425ce607821ecc2fe0f5017c3e7553a47dd0e02d1f374e2f3b52f5c29fe3d16dd33ee0",
+      "name": "terminal output",
+      "plaintext": "686f737424206c73202d6c610d0a",
+      "tsGuestSealed": "947c6edf5397caf748e791b40bddc222b80e2ad00c46044bb7ed66f8379227641d3b83be60daa69a5664",
+      "tsHostSealed": "4b4334dc2538c6b23d0e0680ec1f44f5c99c3084c6dc733a5769dbc48a02f5c140131d88036ca69858c5"
+    },
+    {
+      "channel": 0,
+      "goHostSealed": "fb13efd8a5b0bbf0338fbcf291f731e617a5c9835ca355aff7a1d97f07e342582a7336",
+      "name": "binary payload",
+      "plaintext": "001b5b41fffe0a",
+      "tsGuestSealed": "19eb01ed44da2949a3bf5fe02ecce5d8315c8664ea884cbcc2e8d897e5e0e54dee3140",
+      "tsHostSealed": "ac1b47608c7c910de45bc78cc59d17bc0d99f08255031e0701b38eee16aed6f05e3c23"
+    },
+    {
+      "channel": 7,
+      "goHostSealed": "d550d721e77420afe2e18b49f48298f5bfc54014c890a8302e7fd674a9329da5a39d91a6403df72aabce0526b0f3f4251e",
+      "name": "forwarded channel",
+      "plaintext": "53454c454354202a2046524f4d2073656372657473",
+      "tsGuestSealed": "a94a18453e9dd1495205f2bbd579e38a561e5175bceebe352b150a7eee69bd59f7a5bdab27a8992ca2596c891f3ee1748d",
+      "tsHostSealed": "77f384c616f952ecf0d35ffeb366a3ac288a9fd7a3420689f2c2c762718d7ad939633905603f81382003121fdabf8e6b3d"
+    },
+    {
+      "channel": 0,
+      "goHostSealed": "d556d55b3e901fb9bbd70b8da0b8d324f92129fbaddc57d352db818d",
+      "name": "empty",
+      "plaintext": "",
+      "tsGuestSealed": "2aa4608ea962812152a34d874f5e318e4e6f07ed4626399287d39ee7",
+      "tsHostSealed": "cddc0e028dc3f0896ae89fe305bfdfd59548d9fa23a30d6076df68d7"
+    }
+  ],
+  "rootKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "sessionId": "x5s5gzxptgfksy3hu75jmcoltm",
+  "viewerKeyHex": "12d7aa6d89f4bbf1ad29e7fb78ae0abdd48e7d24f4ad1ccbc3072f48aa88d1c4"
+}
