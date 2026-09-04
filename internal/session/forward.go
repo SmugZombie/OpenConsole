@@ -173,6 +173,7 @@ func (b *Bridge) runForwardWriter(ctx context.Context, s Stream, f *forward) {
 		case <-ctx.Done():
 			return
 		case <-f.closed:
+			b.flushForward(ctx, s, f)
 			return
 		case fr := <-f.out:
 			if err := sendBounded(ctx, s, fr); err != nil {
@@ -182,6 +183,36 @@ func (b *Bridge) runForwardWriter(ctx context.Context, s Stream, f *forward) {
 				f.stop()
 				return
 			}
+		}
+	}
+}
+
+// flushForward delivers what a stopped forward had already been handed.
+//
+// The close path queues the guest's CLOSE and then stops the forward, so both
+// are ready by the time this goroutine looks at them and a select picks
+// between the two at random. Returning on the stop dropped the frame that says
+// the stream ended about half the time, and left the guest holding a
+// connection that had gone quiet rather than closed — for a forwarded
+// database connection, a client waiting on a socket nobody will ever write to
+// again.
+//
+// Stopping means "no more will be accepted", not "discard what was". Anything
+// queued before the stop goes out; anything after it does not, and a write
+// that fails ends the flush, because a guest that cannot be written to cannot
+// be told anything either.
+func (b *Bridge) flushForward(ctx context.Context, s Stream, f *forward) {
+	for {
+		select {
+		case fr := <-f.out:
+			if err := sendBounded(ctx, s, fr); err != nil {
+				b.log.Debug("forward flush failed",
+					slog.String("session_id", b.id),
+					slog.Any("error", err))
+				return
+			}
+		default:
+			return
 		}
 	}
 }
