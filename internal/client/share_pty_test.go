@@ -5,6 +5,8 @@ package client
 import (
 	"bytes"
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -13,6 +15,10 @@ import (
 
 	"github.com/SmugZombie/OpenConsole/internal/terminal"
 )
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 // output collects everything runShare writes to the local screen.
 type output struct {
@@ -94,7 +100,7 @@ func TestShellSurvivesRelayFailure(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		code, err := runShare(ctx, term, dead, stdinR, stdoutW)
+		code, err := runShare(ctx, term, dead, stdinR, stdoutW, Allowlist{}, discardLogger())
 		stdoutW.Close()
 		done <- result{code, err}
 	}()

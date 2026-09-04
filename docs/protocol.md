@@ -45,18 +45,32 @@ Control frames are **JSON**, and self-describing: the wire carries
 `{"type":"RESIZE",...}`, not a magic number. They are rare, so the encoding cost
 is irrelevant, and a packet capture stays readable.
 
-### 3. Channels exist in the header, multiplexing does not exist yet
+### 3. Channels multiplex independent streams
 
-Every frame has a `ChannelID`, and it is on the wire today — the binary header
-is `[type:uint8][channel:uint32]`. Every frame currently uses channel `0`.
+Every frame has a `ChannelID`, on the wire since version 1 — the binary header
+is `[type:uint8][channel:uint32]`. Reserving it then is what let forwarding be
+added now without a wire-format break; a terminal frame looks exactly as it
+always did.
 
-The field is present from the first version because adding TCP forwarding, file
-transfer, or a second terminal later will need multiple concurrent streams over
-one tunnel, and retrofitting a channel field is a wire-format break. Five bytes
-per frame is a rounding error next to that.
+Channel `0` is the terminal. Every other channel is a forwarded TCP connection.
 
-**Multiplexing is explicitly not implemented.** There is no channel open/close
-handshake, no flow control, no per-channel windows.
+**Guests number their own channels**, so two guests will happily both open
+channel 1. The relay therefore keeps two numbering spaces and translates
+between them — each guest's own IDs on one side, relay-assigned IDs toward the
+host on the other:
+
+```
+guest A ch 1 ─┐
+guest B ch 1 ─┼─▶ relay ch 1, 2, 3 ─▶ host
+guest A ch 2 ─┘
+```
+
+Without that, one guest's forwarded database connection would receive another
+guest's bytes. IDs are never reused within a session, so a late frame from a
+closed stream cannot land on a new one.
+
+Flow control is **not** implemented: there are no per-channel windows. See
+[Backpressure](#backpressure) for what happens instead.
 
 ### 4. Credentials travel in payloads, never in URLs
 
@@ -87,7 +101,7 @@ protect if the routing ever changes.
 
 | Type | Value | Direction | Payload | Purpose |
 | --- | --- | --- | --- | --- |
-| `OPEN` | 1 | client→relay, then relay→client | JSON `Open` | Authenticate, then acknowledge. |
+| `OPEN` | 1 | client→relay, then relay→client | JSON `Open` (ch 0) or `ChannelOpen` | Attach a session, or open a forwarded stream. |
 | `DATA` | 2 | both | **raw bytes** | Terminal input/output. |
 | `RESIZE` | 3 | host→relay→guests | JSON `Resize` | The host's window size changed. |
 | `PING` | 4 | both | opaque bytes | Liveness probe. |
@@ -133,10 +147,52 @@ arbitration, which is future work.
 
 // ERROR
 { "code": "unauthorized", "message": "…" }    // message never contains a credential
+
+// OPEN on a non-zero channel — a forwarded TCP connection.
+// The address is dialled by the *host*, on the host's machine.
+{ "kind": "tcp", "host": "localhost", "port": 5432 }
 ```
 
 Error codes: `unauthorized`, `session_not_found`, `session_expired`,
-`protocol_error`, `internal_error`, `unsupported_version`.
+`protocol_error`, `internal_error`, `unsupported_version`, `forward_denied`,
+`forward_failed`, `channel_limit`, `unknown_channel`.
+
+### Roles and what a token is worth
+
+`OPEN` on channel 0 carries a role. `host` and `guest` are requests; the relay
+answers with what the presented token actually grants, in the acknowledgement's
+`role` field. A client may ask for `viewer` to take *less* than its token
+allows, never more. A read-only connection's `DATA` is dropped, and it cannot
+open a forwarding channel at all — a forward reaches whatever the host can
+reach, which is a far larger capability than typing.
+
+### Forwarded channels
+
+```
+guest                         relay                         host
+ │ OPEN ch 1 {tcp, db:5432}     │                             │
+ │─────────────────────────────▶│ OPEN ch 7 {tcp, db:5432}    │
+ │                              │────────────────────────────▶│ dial db:5432
+ │                              │◀─────── OPEN ch 7 ──────────│ connected
+ │◀──────── OPEN ch 1 ──────────│                             │
+ │───────── DATA ch 1 ─────────▶│───────── DATA ch 7 ────────▶│
+ │◀──────── DATA ch 1 ──────────│◀──────── DATA ch 7 ─────────│
+ │───────── CLOSE ch 1 ────────▶│───────── CLOSE ch 7 ───────▶│ socket closed
+```
+
+Rules:
+
+- Only a guest opens a channel. The host answers `OPEN` to accept or `ERROR` to
+  refuse, and the guest sends nothing until one of those arrives — bytes written
+  into a refused channel would be silently discarded, leaving whoever opened the
+  local socket with a connection that accepted their request and then did
+  nothing.
+- The **host** decides what may be dialled, and forwarding is off unless it
+  opted in. The relay never dials anything.
+- A session is capped at 64 open channels, because each costs the host a socket
+  and a goroutine.
+- When a guest disconnects, the relay closes every channel it owned, so the host
+  drops the far end rather than leaking sockets.
 
 ## Framing
 
@@ -235,16 +291,24 @@ outbound queue; one that falls too far behind is disconnected rather than
 allowed to apply backpressure to the host. Dropping one viewer is strictly
 better than freezing the terminal for everyone.
 
+Forwarded channels get their own queue each, and a different policy. Terminal
+output can be dropped — the screen looks wrong for a moment. TCP bytes cannot:
+dropping them silently corrupts whatever is being carried. So a forward that
+overruns its queue is **closed**, and that one connection resets while the
+terminal and every other stream carry on. Real flow control (per-channel
+windows) would avoid the reset entirely and is the obvious next step.
+
 The host side takes the same position from the other direction: if the relay
 stops keeping up, the CLI stops sharing and the local shell carries on. A
 person's own terminal never blocks on someone else's connection.
 
 ## Deliberately out of scope for now
 
-- Multiplexed channels and TCP forwarding
-- Flow control and backpressure signalling between peers
+- Per-channel flow control. A bulk transfer over a link the guest cannot drain
+  fast enough resets that one stream rather than being windowed.
+- Remote forwarding (ssh's `-R`): only guest-initiated forwards exist.
 - Compression
 - End-to-end encryption between host and guest (the relay currently sees
   plaintext; transport TLS is assumed)
-- Read-only guests and multi-guest write arbitration
+- Multi-guest write arbitration
 - Session recording/replay

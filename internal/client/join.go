@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"strconv"
 
 	"github.com/SmugZombie/OpenConsole/internal/protocol"
 	"github.com/SmugZombie/OpenConsole/internal/tunnel"
@@ -64,13 +66,33 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 		fmt.Fprintf(stderr, "openconsole: joined %s (press Ctrl-] to detach)\n", sessionID)
 	}
 
+	// Local listeners come up before the terminal goes raw, so a failure to
+	// bind is a plain error message rather than something lost in raw mode.
+	forwards := newGuestForwards(
+		func(f protocol.Frame) { _ = conn.Send(ctx, f) },
+		func(msg string) { fmt.Fprintf(stderr, "openconsole: %s\n", msg) },
+	)
+	defer forwards.Close()
+
+	for _, spec := range cfg.Forwards {
+		if readOnly {
+			return fmt.Errorf("cannot forward %s: this session is read-only", spec)
+		}
+		addr, err := forwards.Listen(ctx, spec)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "openconsole: forwarding %s -> %s (on the host)\n",
+			addr, net.JoinHostPort(spec.RemoteHost, strconv.Itoa(int(spec.RemotePort))))
+	}
+
 	restore, err := rawTerminal(stdin)
 	if err != nil {
 		return err
 	}
 	defer restore()
 
-	err = runJoin(ctx, conn, stdin, stdout, readOnly)
+	err = runJoin(ctx, conn, stdin, stdout, readOnly, forwards)
 
 	restore()
 	switch {
@@ -89,7 +111,7 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 var errDetached = errors.New("detached")
 
 // runJoin pumps keystrokes to the relay and remote output to the screen.
-func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, readOnly bool) error {
+func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, readOnly bool, forwards *guestForwards) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -137,6 +159,16 @@ func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, read
 				output <- err
 				return
 			}
+
+			// Anything on a non-zero channel belongs to a forwarded
+			// connection, not to the screen.
+			if !f.Channel.IsTerminal() {
+				if forwards != nil {
+					forwards.handle(f)
+				}
+				continue
+			}
+
 			switch f.Type {
 			case protocol.TypeData:
 				if _, err := stdout.Write(f.Payload); err != nil {

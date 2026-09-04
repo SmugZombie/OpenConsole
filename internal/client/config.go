@@ -29,6 +29,12 @@ type Config struct {
 	// This is a local flag on purpose. The shell is chosen by the person at
 	// the keyboard; taking it from the relay would be remote code execution.
 	Shell string
+	// AllowForward is the host's list of targets guests may reach, as
+	// host:port entries or the literal "any". Empty means no forwarding, which
+	// is the default: a forward reaches whatever this machine can reach.
+	AllowForward Allowlist
+	// Forwards are the guest's -L requests.
+	Forwards []ForwardSpec
 	// ReadOnly asks to join without the ability to type, even when the ticket
 	// would allow it. Useful for looking over someone's shoulder without the
 	// risk of a stray keystroke.
@@ -50,6 +56,10 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	fs.SetOutput(output)
 	fs.StringVar(&cfg.Server, "server", cfg.Server, "relay base URL (env "+EnvServer+")")
 	fs.StringVar(&cfg.Shell, "shell", cfg.Shell, "shell to run (default $SHELL)")
+	allow := fs.String("allow-forward", "",
+		"share only: comma-separated host:port targets guests may reach, or \"any\" (default none)")
+	var forwards forwardList
+	fs.Var(&forwards, "L", "join only: forward a local port, [bind:]port:host:hostport (repeatable)")
 	fs.BoolVar(&cfg.ReadOnly, "read-only", false, "join without typing (join only)")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "print version and exit")
 	fs.Usage = func() {
@@ -58,12 +68,23 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 		fmt.Fprintf(output, "  openconsole [flags]                 share this terminal\n")
 		fmt.Fprintf(output, "  openconsole join <ticket> [flags]   join a shared terminal\n")
 		fmt.Fprintf(output, "  openconsole version                 print version\n")
+		fmt.Fprintf(output, "\nForwarding:\n")
+		fmt.Fprintf(output, "  openconsole -allow-forward localhost:5432\n")
+		fmt.Fprintf(output, "  openconsole join <ticket> -L 5432:localhost:5432\n")
 		fmt.Fprintf(output, "\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+
+	list, err := ParseAllowlist(*allow)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.AllowForward = list
+	cfg.Forwards = forwards
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}

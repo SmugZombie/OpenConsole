@@ -40,10 +40,11 @@ $ ▏
 Send the link, and they are in your terminal — no client to install, nothing to
 sign up for.
 
-> **Status: Phase 4.** Terminal sharing works end to end — from another
-> terminal, a browser, or a stock ssh client. TCP forwarding and end-to-end
-> encryption are not built yet. Session creation is unauthenticated, so run your
-> relay on a trusted network or behind an authenticating proxy. See
+> **Status: Phase 5.** Terminal sharing works end to end — from another
+> terminal, a browser, or a stock ssh client. Guests can be read-only, and can
+> forward a TCP port when the host allows it. End-to-end encryption is not built
+> yet, so the relay sees plaintext. Session creation is unauthenticated, so run
+> your relay on a trusted network or behind an authenticating proxy. See
 > [the roadmap](docs/architecture.md#roadmap).
 
 ## How it works
@@ -136,6 +137,27 @@ openconsole join <ticket> -server https://console.example.com
 # or: export OPENCONSOLE_SERVER=https://console.example.com
 ```
 
+## Forwarding a port
+
+Let someone reach a service only your machine can see — a database on loopback,
+a dev server, something on the office network:
+
+```sh
+# you, sharing: nothing is reachable unless you say so
+openconsole -allow-forward localhost:5432
+
+# them, joining
+openconsole join <ticket> -L 5432:localhost:5432
+psql -h 127.0.0.1 -p 5432        # now talking to your database
+```
+
+The connection rides the tunnel the terminal is already using. **The relay never
+dials anything** — your machine does, and only to the targets you listed.
+
+Forwarding is off unless `-allow-forward` is given. Name targets as `host:port`,
+comma-separated. `any` permits everything you can reach; it has to be typed out,
+and the banner says what it means. A read-only guest cannot forward at all.
+
 ## Running a relay with Docker
 
 ```sh
@@ -218,6 +240,8 @@ rather than guessed at.
 | `-server` | `OPENCONSOLE_SERVER` | `http://localhost:8080` | Relay base URL |
 | `-shell` | — | `$SHELL` | Shell to run |
 | `-read-only` | — | — | Join without typing (`join` only) |
+| `-allow-forward` | — | none | Targets guests may reach, or `any` (share only) |
+| `-L` | — | — | Forward a local port, `[bind:]port:host:hostport` (join only, repeatable) |
 | `-version` | — | — | Print version and exit |
 | — | `OPENCONSOLE_TICKET` | — | Ticket for `join`, so it stays out of `ps` |
 
@@ -285,6 +309,11 @@ working UI. Rebuild and commit it alongside any change under `web/src`. See
   in the `OPEN` frame rather than a URL, so they stay out of access logs,
   browser history and `Referer` headers. That is why there is one tunnel
   endpoint instead of a path per session.
+- **One tunnel, many streams.** Channel 0 is the terminal; every other channel
+  is a forwarded TCP connection. The channel field has been in the binary header
+  since version 1, so forwarding was added without a wire-format break. Guests
+  number their own channels and the relay translates, or one guest's database
+  connection would receive another's bytes.
 - **Capability lives in the token, not in a flag.** A viewer link is read-only
   because the relay reads the token and says so; no client is trusted to ask for
   less than it could take. The acknowledgement reports what was granted, so a

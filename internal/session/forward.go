@@ -1,0 +1,299 @@
+package session
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+
+	"github.com/SmugZombie/OpenConsole/internal/protocol"
+)
+
+// Channel routing.
+//
+// Guests number their own channels, so two guests will happily both open
+// channel 1. The relay therefore keeps two numbering spaces and translates
+// between them: each guest's own IDs on one side, relay-assigned IDs toward the
+// host on the other. Without that, one guest's forwarded database connection
+// would receive another guest's bytes.
+//
+//	guest A ch 1 ─┐
+//	guest B ch 1 ─┼─▶ relay ch 1, 2, 3 ─▶ host
+//	guest A ch 2 ─┘
+//
+// Channel 0 is the terminal and is never translated: it is broadcast to every
+// guest, which is the whole point of a shared terminal.
+
+// forwardQueueDepth bounds how much forwarded data may be waiting for one
+// guest.
+//
+// Terminal output can be dropped when a guest falls behind — the screen looks
+// wrong for a moment. A TCP stream cannot: dropping bytes silently corrupts
+// whatever is being carried. So a forward that overruns this is closed, and the
+// forwarded connection resets rather than lying to either end.
+const forwardQueueDepth = 128
+
+// forward is one guest's TCP stream, as the relay sees it.
+type forward struct {
+	guest     *guestConn
+	guestChan protocol.ChannelID
+	hostChan  protocol.ChannelID
+
+	// out carries host→guest bytes. It is separate from the guest's terminal
+	// queue so that a bulk transfer cannot fill the queue the terminal shares,
+	// and so an overrun closes one forward instead of dropping the guest.
+	out    chan protocol.Frame
+	closed chan struct{}
+}
+
+// openForward allocates a relay-side channel for a guest's request.
+//
+// It returns the host-side channel ID the request should be rewritten to.
+func (b *Bridge) openForward(g *guestConn, guestChan protocol.ChannelID) (*forward, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed || b.host == nil {
+		return nil, ErrNoHost
+	}
+	if len(b.forwards) >= protocol.MaxChannels {
+		return nil, ErrChannelLimit
+	}
+	if _, exists := g.channels[guestChan]; exists {
+		return nil, ErrChannelInUse
+	}
+
+	// IDs are never reused within a session. Reuse would let a late frame from
+	// a closed stream land on a new one.
+	b.nextChan++
+	hostChan := b.nextChan
+
+	f := &forward{
+		guest:     g,
+		guestChan: guestChan,
+		hostChan:  hostChan,
+		out:       make(chan protocol.Frame, forwardQueueDepth),
+		closed:    make(chan struct{}),
+	}
+	b.forwards[hostChan] = f
+	g.channels[guestChan] = hostChan
+	return f, nil
+}
+
+// lookupGuestChannel maps one of a guest's channel IDs to the host-side ID.
+func (b *Bridge) lookupGuestChannel(g *guestConn, guestChan protocol.ChannelID) (protocol.ChannelID, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	h, ok := g.channels[guestChan]
+	return h, ok
+}
+
+// lookupHostChannel maps a host-side channel ID back to its forward.
+func (b *Bridge) lookupHostChannel(hostChan protocol.ChannelID) (*forward, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	f, ok := b.forwards[hostChan]
+	return f, ok
+}
+
+// closeForward removes a forward and stops its writer.
+func (b *Bridge) closeForward(hostChan protocol.ChannelID) *forward {
+	b.mu.Lock()
+	f, ok := b.forwards[hostChan]
+	if ok {
+		delete(b.forwards, hostChan)
+		delete(f.guest.channels, f.guestChan)
+	}
+	b.mu.Unlock()
+
+	if !ok {
+		return nil
+	}
+	f.stop()
+	return f
+}
+
+// closeGuestForwards tears down every forward a guest owns, telling the host so
+// it can drop the far end. Called when the guest disconnects.
+func (b *Bridge) closeGuestForwards(ctx context.Context, g *guestConn) {
+	b.mu.Lock()
+	owned := make([]*forward, 0, len(g.channels))
+	for guestChan, hostChan := range g.channels {
+		if f, ok := b.forwards[hostChan]; ok {
+			owned = append(owned, f)
+			delete(b.forwards, hostChan)
+		}
+		delete(g.channels, guestChan)
+	}
+	b.mu.Unlock()
+
+	for _, f := range owned {
+		f.stop()
+		// Best effort: the host may already be gone, in which case there is
+		// nothing left to tell.
+		_ = b.toHost(ctx, onChannel(
+			mustControl(protocol.TypeClose, protocol.Close{Reason: "guest disconnected"}),
+			f.hostChan))
+	}
+}
+
+func (f *forward) stop() {
+	select {
+	case <-f.closed:
+	default:
+		close(f.closed)
+	}
+}
+
+// queue hands a frame to the guest's forward writer.
+//
+// It never blocks: this runs on the host's read loop, and stalling there would
+// freeze the terminal for everyone because one guest is slow to drain a bulk
+// transfer.
+func (f *forward) queue(fr protocol.Frame) bool {
+	select {
+	case f.out <- fr:
+		return true
+	case <-f.closed:
+		return false
+	default:
+		return false
+	}
+}
+
+// runForwardWriter drains one forward to its guest.
+func (b *Bridge) runForwardWriter(ctx context.Context, s Stream, f *forward) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-f.closed:
+			return
+		case fr := <-f.out:
+			if err := sendBounded(ctx, s, fr); err != nil {
+				b.log.Debug("forward write failed",
+					slog.String("session_id", b.id),
+					slog.Any("error", err))
+				f.stop()
+				return
+			}
+		}
+	}
+}
+
+// onChannel returns a copy of a frame addressed to a different channel.
+//
+// Translating IDs is the relay's whole job here, and doing it by copy keeps a
+// frame from being mutated while another goroutine still holds it.
+func onChannel(f protocol.Frame, id protocol.ChannelID) protocol.Frame {
+	f.Channel = id
+	return f
+}
+
+// fromGuestChannel routes a frame a guest sent on a forwarding channel.
+func (b *Bridge) fromGuestChannel(ctx context.Context, s Stream, g *guestConn, f protocol.Frame) error {
+	// Read-only means read-only. A forwarded connection reaches whatever the
+	// host can reach, which is a far larger capability than typing, so a
+	// viewer must not get one by opening a channel instead.
+	if !g.canWrite {
+		return sendBounded(ctx, s, onChannel(mustControl(protocol.TypeError, protocol.Error{
+			Code:    protocol.ErrCodeForwardDenied,
+			Message: "this session is read-only",
+		}), f.Channel))
+	}
+
+	switch f.Type {
+	case protocol.TypeOpen:
+		return b.openGuestChannel(ctx, s, g, f)
+
+	case protocol.TypeData, protocol.TypeClose, protocol.TypeError:
+		hostChan, ok := b.lookupGuestChannel(g, f.Channel)
+		if !ok {
+			// Frames after a close are ordinary — both ends can close at once
+			// — so this is not worth an error back to the guest.
+			return nil
+		}
+		if f.Type != protocol.TypeData {
+			b.closeForward(hostChan)
+		}
+		return b.toHost(ctx, onChannel(f, hostChan))
+
+	default:
+		return nil
+	}
+}
+
+// openGuestChannel allocates a channel and passes the request to the host.
+func (b *Bridge) openGuestChannel(ctx context.Context, s Stream, g *guestConn, f protocol.Frame) error {
+	var req protocol.ChannelOpen
+	if err := protocol.DecodeControl(f, &req); err != nil {
+		return b.refuseChannel(ctx, s, f.Channel, protocol.ErrCodeProtocol, "malformed channel open")
+	}
+	if err := req.Validate(); err != nil {
+		return b.refuseChannel(ctx, s, f.Channel, protocol.ErrCodeProtocol, "invalid channel open")
+	}
+
+	fwd, err := b.openForward(g, f.Channel)
+	switch {
+	case errors.Is(err, ErrChannelLimit):
+		return b.refuseChannel(ctx, s, f.Channel, protocol.ErrCodeChannelLimit, "too many open forwards")
+	case errors.Is(err, ErrChannelInUse):
+		return b.refuseChannel(ctx, s, f.Channel, protocol.ErrCodeProtocol, "channel already open")
+	case err != nil:
+		return b.refuseChannel(ctx, s, f.Channel, protocol.ErrCodeSessionNotFound, "the host is not connected")
+	}
+
+	// One writer per forward, so a bulk transfer to one guest cannot hold up
+	// the terminal or another guest's stream.
+	go b.runForwardWriter(ctx, s, fwd)
+
+	b.log.Info("forward opened",
+		slog.String("session_id", b.id),
+		slog.String("target", req.Target()),
+		slog.Uint64("channel", uint64(fwd.hostChan)))
+
+	// The host answers with OPEN or ERROR on this channel; the reply is routed
+	// back by fromHostChannel.
+	return b.toHost(ctx, onChannel(f, fwd.hostChan))
+}
+
+// refuseChannel tells a guest its channel could not be opened.
+func (b *Bridge) refuseChannel(ctx context.Context, s Stream, ch protocol.ChannelID, code, msg string) error {
+	return sendBounded(ctx, s, onChannel(mustControl(protocol.TypeError, protocol.Error{
+		Code:    code,
+		Message: msg,
+	}), ch))
+}
+
+// fromHostChannel routes a frame the host sent on a forwarding channel back to
+// the one guest that owns it.
+func (b *Bridge) fromHostChannel(f protocol.Frame) {
+	fwd, ok := b.lookupHostChannel(f.Channel)
+	if !ok {
+		// The guest closed the stream while the host was still writing. There
+		// is nobody to deliver to and nothing to report.
+		return
+	}
+
+	// Copy before queueing: the transport owns the payload only until the next
+	// Recv, and this is about to cross a goroutine.
+	out := onChannel(f, fwd.guestChan)
+	out.Payload = append([]byte(nil), f.Payload...)
+
+	closing := f.Type == protocol.TypeClose || f.Type == protocol.TypeError
+
+	if !fwd.queue(out) && !closing {
+		// The guest is not draining a forwarded stream fast enough. Terminal
+		// output could simply be dropped here; TCP bytes cannot, because
+		// losing them silently corrupts whatever is being carried. Close the
+		// one stream instead, and leave the terminal alone.
+		b.log.Warn("forward fell behind; closing it",
+			slog.String("session_id", b.id),
+			slog.Uint64("channel", uint64(f.Channel)))
+		b.closeForward(f.Channel)
+		return
+	}
+
+	if closing {
+		b.closeForward(f.Channel)
+	}
+}

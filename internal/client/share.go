@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -104,7 +105,7 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 	}
 	defer restore()
 
-	code, shareErr := runShare(ctx, term, conn, stdin, stdout)
+	code, shareErr := runShare(ctx, term, conn, stdin, stdout, cfg.AllowForward, forwardLogger(stderr))
 
 	restore()
 	// A mid-session failure was already reported on the terminal as it
@@ -124,7 +125,7 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 //	guest keyboard -> pty
 //	pty           -> local screen
 //	pty           -> relay -> guests
-func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, stdin, stdout *os.File) (int, error) {
+func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, stdin, stdout *os.File, allow Allowlist, logger *slog.Logger) (int, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -141,6 +142,11 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 
 	out := newSender(conn, outboundQueue)
 	go out.run(ctx)
+
+	// Forwarding is off unless the host asked for it. When it is on, the host
+	// dials the targets; the relay never does.
+	forwards := newHostForwards(allow, out.send, logger)
+	defer forwards.closeAll()
 
 	// Local keyboard into the shell. os.Stdin has no interruptible read, so
 	// this goroutine may outlive cancellation; it exits when the process does.
@@ -167,6 +173,13 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 				out.fail(err)
 				return
 			}
+			// Anything on a non-zero channel is a forwarded connection, not
+			// the terminal.
+			if !f.Channel.IsTerminal() {
+				forwards.handle(ctx, f)
+				continue
+			}
+
 			switch f.Type {
 			case protocol.TypeData:
 				if err := writePTY(f.Payload); err != nil {
@@ -253,6 +266,15 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 		sendClose(ctx, conn, code)
 	}
 	return code, out.err()
+}
+
+// forwardLogger sends forwarding activity to the host's own terminal.
+//
+// The host opted into forwarding, so they should be able to see it being used.
+// It is deliberately terse and goes to stderr, alongside the banner, rather
+// than into the shared terminal where a guest would see it too.
+func forwardLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
 // waitShell reaps the shell.

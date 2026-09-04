@@ -39,6 +39,12 @@ var (
 	ErrNoHost = errors.New("session: host not connected")
 	// ErrBridgeClosed means the session's terminal has ended.
 	ErrBridgeClosed = errors.New("session: bridge closed")
+	// ErrChannelLimit means the session already has as many forwarded streams
+	// open as it is allowed.
+	ErrChannelLimit = errors.New("session: too many open channels")
+	// ErrChannelInUse means a guest reused one of its own channel numbers
+	// while the first was still open.
+	ErrChannelInUse = errors.New("session: channel already open")
 )
 
 // guestQueueDepth is how many frames may be outstanding to one guest.
@@ -74,6 +80,12 @@ type Bridge struct {
 	rows     uint16
 	scroll   *ringBuffer
 	onClosed func()
+
+	// forwards holds every open TCP stream, keyed by the relay-assigned
+	// channel ID used toward the host. nextChan only ever increases: reusing
+	// an ID would let a late frame from a closed stream land on a new one.
+	forwards map[protocol.ChannelID]*forward
+	nextChan protocol.ChannelID
 }
 
 // GuestOptions configures one attached guest.
@@ -100,6 +112,10 @@ type guestConn struct {
 	// no lock.
 	canWrite bool
 
+	// channels maps this guest's own channel numbers to the relay-assigned
+	// ones used toward the host. Guarded by the bridge's mutex.
+	channels map[protocol.ChannelID]protocol.ChannelID
+
 	stopOnce sync.Once
 	killOnce sync.Once
 }
@@ -116,10 +132,11 @@ func (g *guestConn) kill() {
 // newBridge creates a bridge for session id.
 func newBridge(id string, log *slog.Logger) *Bridge {
 	return &Bridge{
-		id:     id,
-		log:    log,
-		guests: make(map[*guestConn]struct{}),
-		scroll: newRingBuffer(scrollbackBytes),
+		id:       id,
+		log:      log,
+		guests:   make(map[*guestConn]struct{}),
+		scroll:   newRingBuffer(scrollbackBytes),
+		forwards: make(map[protocol.ChannelID]*forward),
 	}
 }
 
@@ -177,6 +194,13 @@ func (b *Bridge) ServeHost(ctx context.Context, s Stream, cols, rows uint16) err
 		if err != nil {
 			return err
 		}
+		// Anything on a non-zero channel belongs to one forwarded stream and
+		// one guest, not to everybody watching the terminal.
+		if !f.Channel.IsTerminal() {
+			b.fromHostChannel(f)
+			continue
+		}
+
 		switch f.Type {
 		case protocol.TypeData:
 			// Copy before queueing: the transport owns the payload only
@@ -229,9 +253,10 @@ func (b *Bridge) ServeHost(ctx context.Context, s Stream, cols, rows uint16) err
 // added later is silenced by the same code path.
 func (b *Bridge) ServeGuest(ctx context.Context, s Stream, opts GuestOptions) error {
 	g := &guestConn{
-		out:    make(chan protocol.Frame, guestQueueDepth),
-		closed: make(chan struct{}),
-		dead:   make(chan struct{}),
+		out:      make(chan protocol.Frame, guestQueueDepth),
+		closed:   make(chan struct{}),
+		dead:     make(chan struct{}),
+		channels: make(map[protocol.ChannelID]protocol.ChannelID),
 	}
 
 	if opts.Access == "" {
@@ -255,6 +280,10 @@ func (b *Bridge) ServeGuest(ctx context.Context, s Stream, opts GuestOptions) er
 		slog.String("access", string(opts.Access)),
 		slog.Int("guests", n))
 	defer func() {
+		// Forwards go first: the host has a real socket open for each one and
+		// needs telling, whereas the terminal simply loses a viewer.
+		b.closeGuestForwards(context.WithoutCancel(ctx), g)
+
 		b.mu.Lock()
 		delete(b.guests, g)
 		n := len(b.guests)
@@ -350,6 +379,10 @@ func (b *Bridge) ServeGuest(ctx context.Context, s Stream, opts GuestOptions) er
 
 // fromGuest handles one frame arriving from a guest.
 func (b *Bridge) fromGuest(ctx context.Context, s Stream, g *guestConn, f protocol.Frame) error {
+	if !f.Channel.IsTerminal() {
+		return b.fromGuestChannel(ctx, s, g, f)
+	}
+
 	switch f.Type {
 	case protocol.TypeData:
 		if !g.canWrite {

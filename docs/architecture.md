@@ -7,8 +7,9 @@ that relay.
 
 This document describes the whole planned system and marks what exists today.
 Terminal sharing works: a host shares a real shell, and guests attach from
-another terminal, a browser, or a stock ssh client. TCP forwarding and
-end-to-end encryption are still to come.
+another terminal, a browser, or a stock ssh client. Guests can be read-only, and
+can forward a TCP port when the host allows it. End-to-end encryption is still
+to come.
 
 ## The problem
 
@@ -317,6 +318,57 @@ trial, wrong for anything reached twice.
 SSH is **opt-in**: no `-ssh-listen`, no listener. An upgrade should never start
 listening on a new port without the operator asking.
 
+## Port forwarding
+
+A guest can reach a service only the host can see:
+
+```sh
+# host — nothing is reachable unless this says so
+openconsole -allow-forward localhost:5432
+
+# guest
+openconsole join <ticket> -L 5432:localhost:5432
+psql -h 127.0.0.1 -p 5432
+```
+
+Each accepted local connection becomes a channel on the tunnel the terminal is
+already using. The relay routes frames; it never dials anything itself, so the
+only machine that reaches a forward target is the one whose owner opted in.
+
+### The security boundary is the host's allowlist
+
+A forward reaches whatever the host machine can reach — a database on loopback,
+something on the office network, a cloud metadata endpoint. That is a far larger
+capability than typing into a terminal, so:
+
+- Forwarding is **off** unless `-allow-forward` is given. Silence means no.
+- The host names the targets, as `host:port` pairs. `any` exists, has to be
+  typed out, and makes the banner say what it means.
+- Matching is on the literal host as written, not on what it resolves to.
+  Resolving first would mean a name that pointed somewhere harmless when
+  configured could point elsewhere by the time it is dialled, and it would turn
+  every check into a DNS lookup a guest can trigger.
+- **A read-only guest cannot open a channel at all.** Read-only has to mean
+  read-only, or it is just a suggestion.
+- The refusal names the target the guest asked for and nothing else; listing
+  what *is* permitted would hand them a map of the host's network.
+
+### Channel translation
+
+Guests number their own channels, so two guests will both open channel 1. The
+relay keeps two numbering spaces and translates between them; see
+[protocol.md](protocol.md#3-channels-multiplex-independent-streams). Getting
+this wrong would mean one guest's database connection receiving another's bytes,
+so it is covered by a test that opens the same guest-side channel number from
+two guests and checks the streams stay apart.
+
+### What is not there yet
+
+No per-channel flow control. A forward that overruns its queue is closed, so
+one stream resets rather than the terminal stalling or bytes being silently
+lost. Windows are the obvious next step. There is also no remote forwarding
+(ssh's `-R`); only guests initiate.
+
 ## Deployment
 
 The relay ships as a `scratch` image containing one static binary, running as
@@ -338,8 +390,8 @@ fails to connect.
 | 2 | PTY + shell, WebSocket tunnel, host↔guest streaming, terminal guest client, container image. | ✅ |
 | 3 | Browser client: Vite + TypeScript + xterm.js, embedded in the relay. | ✅ |
 | 4 | Native SSH access (`ssh <session>@relay`). | ✅ |
-| 5 | Read-only guests ✅; multiplexed channels for TCP forwarding. | in progress |
-| 6 | End-to-end encryption between host and guest. | |
+| 5 | Read-only guests; multiplexed channels for TCP forwarding. | ✅ |
+| 6 | End-to-end encryption between host and guest. | next |
 
 ## Known gaps
 
@@ -365,11 +417,15 @@ fails to connect.
 8. **A guest link is a bearer capability.** Anyone who obtains the full URL has
    the terminal. It cannot be revoked short of ending the session, and there is
    no per-guest identity or audit trail.
-9. **SSH authentication is unthrottled across connections.** `MaxAuthTries`
+9. **Forwarded streams have no flow control.** A bulk transfer over a link the
+   guest cannot drain fast enough resets that one stream. The terminal is never
+   affected and no bytes are lost silently, but per-channel windows would avoid
+   the reset entirely.
+10. **SSH authentication is unthrottled across connections.** `MaxAuthTries`
    bounds guesses per connection, but nothing limits connections per source. A
    256-bit token makes guessing hopeless; this is about the work an
    unauthenticated peer can make the relay do.
-10. **The committed web bundle can go stale.** `internal/webui/dist` is generated
+11. **The committed web bundle can go stale.** `internal/webui/dist` is generated
    but checked in so `go build` needs no Node. Nothing yet fails a build when it
    is older than `web/src`; the Docker image sidesteps this by rebuilding, but a
    CI check would be better.

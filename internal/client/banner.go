@@ -33,6 +33,16 @@ func printBanner(w io.Writer, cfg Config, sess *Session, joinURL, viewURL, sshCm
 	fmt.Fprintf(w, "\n  watch only (cannot type):\n    %s\n", viewURL)
 	fmt.Fprintf(w, "    openconsole join %s\n", viewTicket)
 
+	if cfg.AllowForward.Enabled() {
+		fmt.Fprintf(w, "\n  port forwarding: guests may reach %s\n", cfg.AllowForward.String())
+		if cfg.AllowForward.AllowsAny() {
+			// Worth saying plainly: this is every address this machine can
+			// reach, not just the obvious ones.
+			fmt.Fprintf(w, "    WARNING: that is anything this machine can reach, including\n")
+			fmt.Fprintf(w, "    private networks and cloud metadata endpoints.\n")
+		}
+	}
+
 	fmt.Fprintf(w, "\n  The first ticket grants full control of this terminal; the second lets\n")
 	fmt.Fprintf(w, "  someone watch only. Send either one privately, and type 'exit' here to\n")
 	fmt.Fprintf(w, "  end the session.\n\n")
