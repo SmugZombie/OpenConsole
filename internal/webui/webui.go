@@ -1,4 +1,5 @@
-// Package webui serves the browser terminal client.
+// Package webui serves the browser terminal client, and the page that explains
+// what the thing is.
 //
 // The built bundle is embedded in the binary, so the relay is still a single
 // file with nothing to mount and no static-file directory to configure. The
@@ -66,12 +67,22 @@ func Register(mux *http.ServeMux) {
 	if err != nil {
 		panic("webui: missing index.html in the embedded bundle: " + err.Error())
 	}
+	docs, err := fs.ReadFile(assets, "docs.html")
+	if err != nil {
+		panic("webui: missing docs.html in the embedded bundle: " + err.Error())
+	}
 	entry := indexHandler(index)
 	files := fileHandler(assets)
 
 	// The single-page entry: the landing form, and every session page.
 	mux.Handle("GET /{$}", entry)
 	mux.Handle("GET /s/{id}", entry)
+
+	// The explainer, at a path worth putting in a footer. It is served from
+	// /docs rather than /docs.html so the URL survives the page becoming
+	// something other than one static file.
+	mux.Handle("GET /docs", indexHandler(docs))
+	mux.Handle("GET /docs/{$}", indexHandler(docs))
 
 	// Fingerprinted bundles.
 	mux.Handle("GET "+assetPrefix, files)
@@ -84,14 +95,20 @@ func Register(mux *http.ServeMux) {
 		panic("webui: reading the embedded bundle: " + err.Error())
 	}
 	for _, e := range roots {
-		if e.IsDir() || e.Name() == "index.html" {
+		// The two documents have routes of their own above. Serving them here
+		// as well would give each page a second URL that search engines and
+		// links would then disagree about.
+		if e.IsDir() || e.Name() == "index.html" || e.Name() == "docs.html" {
 			continue
 		}
 		mux.Handle("GET /"+e.Name(), files)
 	}
 }
 
-// indexHandler serves the SPA entry point.
+// indexHandler serves one embedded HTML document.
+//
+// Used for both the app entry and the explainer: each names the current asset
+// hashes, so both have to revalidate rather than be cached by name.
 func indexHandler(index []byte) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w)

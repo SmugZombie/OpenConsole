@@ -221,6 +221,11 @@ Both download a release binary from GitHub, so a relay on a network without
 outbound internet access should point people at
 `go install` or a mirror via `OPENCONSOLE_BASE_URL` instead.
 
+Every relay also serves `/docs`, an explainer covering what OpenConsole is, how
+it is used, and what the relay in the middle can and cannot see. It names the
+relay it is served from, so a self-hosted one gives instructions that work
+without editing. The footer on every page links to it.
+
 ## Behind a reverse proxy
 
 The relay speaks plain HTTP and does not terminate TLS. In any deployment

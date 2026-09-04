@@ -22,92 +22,109 @@
     <meta property="og:description" content="Share a terminal. No inbound ports." />
     <meta property="og:image" content="/og.jpg" />
     <meta name="twitter:card" content="summary_large_image" />
-    <script type="module" crossorigin src="/assets/index-CKQbSqsH.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BESThwmN.css">
+    <script type="module" crossorigin src="/assets/main-CKwBFV_R.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/footer-CszaA-GW.js">
+    <link rel="stylesheet" crossorigin href="/assets/footer-IeLEUO9A.css">
+    <link rel="stylesheet" crossorigin href="/assets/main-LZoznX6r.css">
   </head>
   <body>
-    <!-- Landing view: shown at /, hidden on a session page. -->
-    <main id="landing" hidden>
-      <div class="card">
-        <div class="brand">
-          <img src="/icon.svg" alt="" width="44" height="44" class="mark" />
-          <div>
-            <h1 class="wordmark"><span>Open</span>Console</h1>
-            <p class="lede">Share a terminal. No inbound ports.</p>
+    <!-- Landing view: shown at /, hidden on a session page. The wrapper exists
+         so the footer sits below the centred card rather than inside the grid
+         that centres it. -->
+    <div id="landing-wrap" hidden>
+      <main id="landing">
+        <div class="card">
+          <div class="brand">
+            <img src="/icon.svg" alt="" width="44" height="44" class="mark" />
+            <div>
+              <h1 class="wordmark"><span>Open</span>Console</h1>
+              <p class="lede">Share a terminal. No inbound ports.</p>
+            </div>
           </div>
-        </div>
 
-        <form id="join-form">
-          <label for="ticket">Ticket</label>
-          <input
-            id="ticket"
-            name="ticket"
-            type="text"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck="false"
-            placeholder="session.token"
-            required
-          />
-          <button type="submit">Join terminal</button>
-          <p class="error" id="ticket-error" hidden></p>
-        </form>
+          <form id="join-form">
+            <label for="ticket">Ticket</label>
+            <input
+              id="ticket"
+              name="ticket"
+              type="text"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="session.token"
+              required
+            />
+            <button type="submit">Join terminal</button>
+            <p class="error" id="ticket-error" hidden></p>
+          </form>
 
-        <p class="hint">
-          Whoever is sharing gets a ticket from <code>openconsole</code>. Paste
-          it here, or just open the link they sent you.
-        </p>
+          <p class="hint">
+            Whoever is sharing gets a ticket from <code>openconsole</code>. Paste
+            it here, or just open the link they sent you.
+          </p>
 
-        <!-- Most people who land here need nothing installed, so say that
-             first and keep the install instructions folded away. -->
-        <details class="connect">
-          <summary>Prefer a terminal? Or want to share your own?</summary>
+          <!-- Most people who land here need nothing installed, so say that
+               first and keep the install instructions folded away. -->
+          <details class="connect">
+            <summary>Prefer a terminal? Or want to share your own?</summary>
 
-          <div class="connect-body">
-            <p class="connect-note">
-              To <strong>join</strong>, you need nothing installed — this page
-              is enough.
-            </p>
-
-            <!-- Shown only when the relay actually accepts ssh joins, and with
-                 the address it says to use: ssh often lives on a name of its
-                 own, because HTTP proxies do not carry arbitrary TCP ports. -->
-            <div id="ssh-help" hidden>
-              <p class="connect-note">An ssh client works too:</p>
-              <pre><code id="ssh-command">ssh &lt;session-id&gt;@this-relay</code></pre>
+            <div class="connect-body">
               <p class="connect-note">
-                The session ID is the part of the ticket before the first dot.
-                Paste the part after it when asked for a token. Encrypted
-                sessions cannot be joined this way — an ssh client has no key.
+                To <strong>join</strong>, you need nothing installed — this page
+                is enough.
+              </p>
+
+              <!-- Shown only when the relay actually accepts ssh joins, and with
+                   the address it says to use: ssh often lives on a name of its
+                   own, because HTTP proxies do not carry arbitrary TCP ports. -->
+              <div id="ssh-help" hidden>
+                <p class="connect-note">An ssh client works too:</p>
+                <pre><code id="ssh-command">ssh &lt;session-id&gt;@this-relay</code></pre>
+                <p class="connect-note">
+                  The session ID is the part of the ticket before the first dot.
+                  Paste the part after it when asked for a token. Encrypted
+                  sessions cannot be joined this way — an ssh client has no key.
+                </p>
+              </div>
+
+              <p class="connect-note">
+                To <strong>share your own terminal</strong>, install the client
+                — macOS or Linux:
+              </p>
+              <pre><code>curl -fsSL <span data-relay-origin>https://openconsole.dev</span>/install.sh | sh</code></pre>
+              <p class="connect-note">Windows, in PowerShell:</p>
+              <pre><code>irm <span data-relay-origin>https://openconsole.dev</span>/install.ps1 | iex</code></pre>
+              <p class="connect-note">
+                Then run <code>openconsole</code>. It prints a ticket and a link
+                to send to whoever is joining. On Windows that shares
+                <code>cmd.exe</code>; add
+                <code>-shell powershell.exe</code> to share PowerShell instead.
+                Read the script
+                (<a href="/install.sh">sh</a>, <a href="/install.ps1">ps1</a>)
+                before you run it — it downloads a release binary from GitHub and
+                does nothing else.
+              </p>
+
+              <p class="connect-note muted-note">
+                Rather build it yourself?
+                <code>go install github.com/SmugZombie/OpenConsole/cmd/openconsole@latest</code>
               </p>
             </div>
+          </details>
+        </div>
+      </main>
 
-            <p class="connect-note">
-              To <strong>share your own terminal</strong>, install the client
-              — macOS or Linux:
-            </p>
-            <pre><code>curl -fsSL <span data-relay-origin>https://openconsole.dev</span>/install.sh | sh</code></pre>
-            <p class="connect-note">Windows, in PowerShell:</p>
-            <pre><code>irm <span data-relay-origin>https://openconsole.dev</span>/install.ps1 | iex</code></pre>
-            <p class="connect-note">
-              Then run <code>openconsole</code>. It prints a ticket and a link
-              to send to whoever is joining. On Windows that shares
-              <code>cmd.exe</code>; add
-              <code>-shell powershell.exe</code> to share PowerShell instead.
-              Read the script
-              (<a href="/install.sh">sh</a>, <a href="/install.ps1">ps1</a>)
-              before you run it — it downloads a release binary from GitHub and
-              does nothing else.
-            </p>
-
-            <p class="connect-note muted-note">
-              Rather build it yourself?
-              <code>go install github.com/SmugZombie/OpenConsole/cmd/openconsole@latest</code>
-            </p>
-          </div>
-        </details>
-      </div>
-    </main>
+      <footer class="site-footer">
+        <nav>
+          <a href="https://github.com/SmugZombie/OpenConsole">GitHub</a>
+          <span aria-hidden="true">·</span>
+          <a href="/docs">What is this?</a>
+          <span aria-hidden="true">·</span>
+          <span class="version" id="relay-version" hidden></span>
+        </nav>
+        <p class="copyright">© <span data-year>2026</span> openconsole.dev</p>
+      </footer>
+    </div>
 
     <!-- Terminal view: shown at /s/&lt;session&gt;. -->
     <div id="session" hidden>

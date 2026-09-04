@@ -10,6 +10,17 @@ export default defineConfig({
   build: {
     outDir: '../internal/webui/dist',
     emptyOutDir: true,
+    rollupOptions: {
+      // Two pages: the client, and the explainer the footer links to. The
+      // explainer is a separate document rather than a route in the app so it
+      // needs no JavaScript to be readable, and so a browser can find it.
+      // Paths are relative to the project root, which keeps this config free
+      // of node typings it would otherwise need only for __dirname.
+      input: {
+        main: 'index.html',
+        docs: 'docs.html',
+      },
+    },
     // The relay serves these itself; a sourcemap would ship the whole client
     // source inside the binary for no benefit to an operator.
     sourcemap: false,
