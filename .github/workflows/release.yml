@@ -38,8 +38,12 @@ jobs:
               -o "dist/openconsole" ./cmd/openconsole
             # The installer expects openconsole_<os>_<arch>.tar.gz holding a
             # bare `openconsole`. Keep the two in step.
-            tar -czf "dist/openconsole_${os}_${arch}.tar.gz" -C dist openconsole
-            rm dist/openconsole
+            # LICENSE rides along: MIT asks for the notice to be included with
+            # copies, and a release tarball is a copy. install.sh takes the
+            # bare binary and ignores anything else in the archive.
+            cp LICENSE dist/LICENSE
+            tar -czf "dist/openconsole_${os}_${arch}.tar.gz" -C dist openconsole LICENSE
+            rm dist/openconsole dist/LICENSE
           done
           cd dist && sha256sum *.tar.gz > checksums.txt
 

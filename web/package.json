@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Browser terminal client for OpenConsole",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

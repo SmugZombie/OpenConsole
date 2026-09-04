@@ -62,6 +62,9 @@ FROM scratch
 # without rebuilding the base.
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /out/openconsole-server /openconsole-server
+# MIT asks for the notice to travel with copies of the software, and an image
+# is a copy. It costs a kilobyte.
+COPY --from=build /src/LICENSE /LICENSE
 COPY --from=build --chown=65532:65532 /state /var/lib/openconsole
 
 # Run unprivileged. scratch has no /etc/passwd, so the uid is given numerically;

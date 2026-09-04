@@ -379,4 +379,16 @@ The full list is in
 
 ## License
 
-Not yet chosen.
+[MIT](LICENSE). Copyright (c) 2026 Ron Egli.
+
+The four dependencies that ship inside the binaries are permissively licensed
+and compatible with it:
+
+| Dependency | Licence |
+| --- | --- |
+| `github.com/coder/websocket` | ISC |
+| `github.com/creack/pty` | MIT |
+| `golang.org/x/crypto`, `x/term`, `x/sys` | BSD-3-Clause |
+
+The browser client bundles [xterm.js](https://xtermjs.org) and its fit and
+web-links addons, all MIT.
