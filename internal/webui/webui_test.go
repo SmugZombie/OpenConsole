@@ -97,6 +97,9 @@ func TestServesBrandAssets(t *testing.T) {
 		{"/apple-touch-icon.png", "image/png"},
 		{"/og.jpg", "image/jpeg"},
 		{"/site.webmanifest", "application/manifest+json"},
+		// Plain text so a browser shows the installer rather than downloading
+		// it: anyone piping a script into a shell should be able to read it.
+		{"/install.sh", "text/plain"},
 	}
 	for _, tc := range tests {
 		rec := get(t, mux, tc.path)
@@ -168,6 +171,24 @@ func TestSecurityHeaders(t *testing.T) {
 			if !strings.Contains(csp, want) {
 				t.Errorf("GET %s CSP missing %q: %s", path, want, csp)
 			}
+		}
+	}
+}
+
+// The installer is the one file people are told to pipe into a shell, so it
+// has to actually be there and actually be a script.
+func TestInstallerIsServed(t *testing.T) {
+	rec := get(t, newMux(), "/install.sh")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /install.sh = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, "#!/bin/sh") {
+		t.Fatalf("the installer does not start with a shebang: %.40q", body)
+	}
+	for _, want := range []string{"SmugZombie/OpenConsole", "openconsole"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the installer does not mention %q", want)
 		}
 	}
 }

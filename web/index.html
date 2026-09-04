@@ -55,6 +55,40 @@
           Whoever is sharing gets a ticket from <code>openconsole</code>. Paste
           it here, or just open the link they sent you.
         </p>
+
+        <!-- Most people who land here need nothing installed, so say that
+             first and keep the install instructions folded away. -->
+        <details class="connect">
+          <summary>Prefer a terminal? Or want to share your own?</summary>
+
+          <div class="connect-body">
+            <p class="connect-note">
+              To <strong>join</strong>, you need nothing installed — this page
+              works, and so does SSH:
+            </p>
+            <pre><code>ssh &lt;session-id&gt;@<span data-relay-host>this-relay</span></code></pre>
+            <p class="connect-note">
+              The session ID is the part of the ticket before the dot. Paste the
+              part after the dot when it asks for a token.
+            </p>
+
+            <p class="connect-note">
+              To <strong>share your own terminal</strong>, install the client:
+            </p>
+            <pre><code>curl -fsSL <span data-relay-origin>https://openconsole.dev</span>/install.sh | sh</code></pre>
+            <p class="connect-note">
+              Then run <code>openconsole</code>. It prints a ticket and a link
+              to send to whoever is joining.
+              <a href="/install.sh">Read the script</a> before you run it — it
+              downloads a release binary from GitHub and does nothing else.
+            </p>
+
+            <p class="connect-note muted-note">
+              Rather build it yourself?
+              <code>go install github.com/SmugZombie/OpenConsole/cmd/openconsole@latest</code>
+            </p>
+          </div>
+        </details>
       </div>
     </main>
 

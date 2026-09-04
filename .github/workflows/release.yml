@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The client is the only thing published here. The relay ships as a
+      # container image; the binary people need to download is the one they
+      # run on their own machine.
+      - name: Build client binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -eu
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            echo "building openconsole for $os/$arch"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "dist/openconsole" ./cmd/openconsole
+            # The installer expects openconsole_<os>_<arch>.tar.gz holding a
+            # bare `openconsole`. Keep the two in step.
+            tar -czf "dist/openconsole_${os}_${arch}.tar.gz" -C dist openconsole
+            rm dist/openconsole
+          done
+          cd dist && sha256sum *.tar.gz > checksums.txt
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          generate_release_notes: true

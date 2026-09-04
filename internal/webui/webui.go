@@ -29,6 +29,13 @@ func init() {
 	if err := mime.AddExtensionType(".webmanifest", "application/manifest+json"); err != nil {
 		panic("webui: registering the webmanifest media type: " + err.Error())
 	}
+	// The installer is served as plain text rather than a shell type so a
+	// browser displays it instead of downloading it. Anyone told to pipe a
+	// script into a shell should be able to read it first by opening the same
+	// URL, and a download prompt discourages exactly that.
+	if err := mime.AddExtensionType(".sh", "text/plain; charset=utf-8"); err != nil {
+		panic("webui: registering the shell script media type: " + err.Error())
+	}
 }
 
 // Assets returns the embedded bundle rooted at its top level.

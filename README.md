@@ -77,6 +77,21 @@ number of guests.
 Four dependencies, all of them small: `coder/websocket`, `creack/pty`,
 `golang.org/x/term`, and `golang.org/x/sys`.
 
+## Install
+
+```sh
+curl -fsSL https://openconsole.dev/install.sh | sh
+```
+
+Or with Go: `go install github.com/SmugZombie/OpenConsole/cmd/openconsole@latest`
+
+You only need this to **share** a terminal, or to join from one. To **join**,
+a browser needs nothing installed, and neither does
+`ssh <session-id>@your-relay`.
+
+Any relay serves its own installer, so a self-hosted one works the same way:
+`curl -fsSL https://your-relay/install.sh | sh`.
+
 ## Quick start
 
 Three terminals, all on one machine:

@@ -36,6 +36,15 @@ function el<T extends HTMLElement>(id: string): T {
 function showLanding(): void {
   el('landing').hidden = false;
 
+  // The instructions name this relay rather than a placeholder, so they can be
+  // copied without editing. A self-hosted relay says its own address.
+  for (const node of document.querySelectorAll('[data-relay-host]')) {
+    node.textContent = window.location.hostname;
+  }
+  for (const node of document.querySelectorAll('[data-relay-origin]')) {
+    node.textContent = window.location.origin;
+  }
+
   const form = el<HTMLFormElement>('join-form');
   const input = el<HTMLInputElement>('ticket');
   const error = el('ticket-error');

@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # The race detector is not optional here: the relay is a fan-in point and
+      # most of its interesting logic is concurrent.
+      - name: go test -race
+        run: go test -race ./...
+
+      - name: cross-compile
+        run: |
+          GOOS=linux GOARCH=amd64 go build ./...
+          GOOS=linux GOARCH=arm64 go build ./...
+          GOOS=darwin GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=amd64 go build ./...
+
+  web:
+    name: Browser client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+        working-directory: web
+
+      - run: npm run test
+        working-directory: web
+
+      # internal/webui/dist is generated but committed, so `go build` works
+      # without Node. That only holds if somebody remembers to rebuild it —
+      # this is the check that they did.
+      - name: the committed bundle matches the sources
+        run: |
+          npm --prefix web run build
+          if ! git diff --quiet -- internal/webui/dist; then
+            echo "internal/webui/dist is stale. Run: npm --prefix web run build"
+            git diff --stat -- internal/webui/dist
+            exit 1
+          fi
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build only: pushing images is a release concern, and a PR should not
+      # need registry credentials.
+      - run: docker build -t openconsole-server:ci .

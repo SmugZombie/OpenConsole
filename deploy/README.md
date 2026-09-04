@@ -119,6 +119,55 @@ cannot be used as a port-forwarding jump host. The relay never runs a shell for
 an SSH connection — the shell it bridges to is the host's, already running on
 the host's own machine.
 
+## Who may create a session
+
+Creating a session is the one unauthenticated thing the relay does. Three
+limits apply, and the defaults let a person work without configuring anything:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `OPENCONSOLE_CREATE_RATE` | `30` | Creations per minute per source, `0` disables |
+| `OPENCONSOLE_CREATE_BURST` | `10` | Creations allowed at once per source |
+| `OPENCONSOLE_MAX_SESSIONS` | `512` | Live session ceiling, `0` for none |
+| `OPENCONSOLE_CREATE_TOKEN` | unset | Secret required to create a session |
+| `OPENCONSOLE_TRUSTED_PROXIES` | unset | CIDRs whose `X-Forwarded-For` is believed |
+
+**Set `OPENCONSOLE_TRUSTED_PROXIES` if a proxy sits in front.** Without it every
+request looks like it came from the proxy, so the per-source rate limit becomes
+one bucket shared by everyone — worse than no limit, because it looks like it is
+working. For the compose file above:
+
+```yaml
+environment:
+  OPENCONSOLE_TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12"
+```
+
+To make a relay private, set a secret and give it to the people who may share:
+
+```yaml
+environment:
+  OPENCONSOLE_CREATE_TOKEN: "…"     # relay
+```
+
+```sh
+export OPENCONSOLE_RELAY_TOKEN=…    # whoever runs `openconsole`
+```
+
+Joining never needs the secret — a ticket is the credential for that.
+
+## The client installer
+
+The relay serves `/install.sh`, so guests can install the client from the same
+address they were sent:
+
+```sh
+curl -fsSL https://console.example.com/install.sh | sh
+```
+
+It downloads a release binary from GitHub, so a relay on a network without
+outbound internet access should point people at
+`go install` or a mirror via `OPENCONSOLE_BASE_URL` instead.
+
 ## Behind a reverse proxy
 
 The relay speaks plain HTTP and does not terminate TLS. In any deployment
