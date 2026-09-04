@@ -115,10 +115,17 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 	}
 	defer restore()
 
+	// The shell's output is full of escape sequences. On Windows a console
+	// shows them as text unless it is told otherwise; elsewhere this does
+	// nothing.
+	restoreVT := enableVirtualTerminal(stdout)
+	defer restoreVT()
+
 	code, shareErr := runShare(ctx, term, conn, stdin, stdout,
 		cfg.AllowForward, forwardLogger(stderr), crypt)
 
 	restore()
+	restoreVT()
 	// A mid-session failure was already reported on the terminal as it
 	// happened; this is the summary, not a second warning.
 	if shareErr != nil {
@@ -218,15 +225,14 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 
 	// Local window resizes follow the host's terminal and are announced to
 	// guests; the host owns its size.
-	winch := make(chan os.Signal, 1)
-	notifyResize(winch)
-	defer stopResize(winch)
+	resized, stopResize := watchResize(stdout)
+	defer stopResize()
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-winch:
+			case <-resized:
 				c, r := terminalSize(stdout)
 				_ = term.Resize(c, r)
 				if f, err := protocol.NewControl(protocol.TypeResize, protocol.Resize{Cols: c, Rows: r}); err == nil {

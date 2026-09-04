@@ -13,11 +13,25 @@ import (
 	"github.com/creack/pty"
 )
 
-// Default window size when the caller does not know one yet.
-const (
-	defaultCols = 80
-	defaultRows = 24
-)
+// DefaultShell is used when neither Options.Shell nor $SHELL names one.
+const DefaultShell = "/bin/sh"
+
+// shell resolves which program to run.
+func (o Options) shell() string {
+	if o.Shell != "" {
+		return o.Shell
+	}
+	if s := os.Getenv("SHELL"); s != "" {
+		return s
+	}
+	return DefaultShell
+}
+
+// unixPTY is a shell on a Unix pseudo-terminal.
+type unixPTY struct {
+	f   *os.File
+	cmd *exec.Cmd
+}
 
 // Start launches a shell on a new pseudo-terminal.
 func Start(opts Options) (*Terminal, error) {
@@ -32,10 +46,7 @@ func Start(opts Options) (*Terminal, error) {
 
 	cmd := exec.Command(path, opts.Args...)
 	cmd.Dir = opts.Dir
-	cmd.Env = opts.Env
-	if cmd.Env == nil {
-		cmd.Env = os.Environ()
-	}
+	cmd.Env = opts.env()
 	// Setsid gives the shell its own session with the pty as controlling
 	// terminal. Without it job control, Ctrl-C and SIGWINCH do not reach the
 	// child correctly.
@@ -47,16 +58,31 @@ func Start(opts Options) (*Terminal, error) {
 	}
 	f, err := pty.StartWithSize(cmd, size)
 	if err != nil {
+		// Every Unix we ship for has ptys; a platform without them should say
+		// so in this package's own terms rather than the pty library's.
+		if errors.Is(err, pty.ErrUnsupported) {
+			return nil, ErrUnsupported
+		}
 		return nil, fmt.Errorf("terminal: start %s: %w", path, err)
 	}
 
-	return &Terminal{pty: f, cmd: cmd, name: path, done: make(chan struct{})}, nil
+	return newTerminal(&unixPTY{f: f, cmd: cmd}, path), nil
 }
 
-// Resize changes the terminal window size and signals the shell (SIGWINCH), so
-// full-screen programs such as vim or top redraw.
-func (t *Terminal) Resize(cols, rows uint16) error {
-	err := pty.Setsize(t.pty, &pty.Winsize{
+// Pid reports the shell's process id.
+func (u *unixPTY) Pid() int {
+	if u.cmd.Process == nil {
+		return 0
+	}
+	return u.cmd.Process.Pid
+}
+
+func (u *unixPTY) Read(p []byte) (int, error)  { return u.f.Read(p) }
+func (u *unixPTY) Write(p []byte) (int, error) { return u.f.Write(p) }
+
+// Resize changes the window size and signals the shell (SIGWINCH).
+func (u *unixPTY) Resize(cols, rows uint16) error {
+	err := pty.Setsize(u.f, &pty.Winsize{
 		Cols: orDefault(cols, defaultCols),
 		Rows: orDefault(rows, defaultRows),
 	})
@@ -66,20 +92,30 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 	return nil
 }
 
+// Wait reaps the shell and reports its exit status.
+func (u *unixPTY) Wait() (int, error) {
+	err := u.cmd.Wait()
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return 0, nil
+	case errors.As(err, &ee):
+		return ee.ExitCode(), nil
+	default:
+		return -1, err
+	}
+}
+
 // Close terminates the shell and releases the pty.
 //
 // SIGHUP is sent first, which is what a real terminal hangup does and gives the
 // shell a chance to clean up. Closing the master then tears down anything that
 // ignored it.
-func (t *Terminal) Close() error {
-	var err error
-	t.closeOnce.Do(func() {
-		if t.cmd.Process != nil {
-			_ = t.cmd.Process.Signal(syscall.SIGHUP)
-		}
-		err = t.pty.Close()
-	})
-	return err
+func (u *unixPTY) Close() error {
+	if u.cmd.Process != nil {
+		_ = u.cmd.Process.Signal(syscall.SIGHUP)
+	}
+	return u.f.Close()
 }
 
 // isTerminalClosed reports whether err means the shell is gone.
@@ -88,11 +124,4 @@ func (t *Terminal) Close() error {
 // macOS. Callers only care that there is nothing more to read.
 func isTerminalClosed(err error) bool {
 	return errors.Is(err, syscall.EIO) || errors.Is(err, fs.ErrClosed)
-}
-
-func orDefault(v, def uint16) uint16 {
-	if v == 0 {
-		return def
-	}
-	return v
 }

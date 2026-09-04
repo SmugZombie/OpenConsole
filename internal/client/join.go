@@ -138,9 +138,16 @@ func joinWith(ctx context.Context, cfg Config, parsed Ticket, stdin, stdout *os.
 	}
 	defer restore()
 
+	// The host's terminal is full of escape sequences. On Windows a console
+	// shows them as text unless it is told otherwise; elsewhere this does
+	// nothing.
+	restoreVT := enableVirtualTerminal(stdout)
+	defer restoreVT()
+
 	err = runJoin(ctx, conn, stdin, stdout, readOnly, forwards, enc)
 
 	restore()
+	restoreVT()
 	switch {
 	case errors.Is(err, errDetached):
 		fmt.Fprintf(stderr, "\nopenconsole: detached\n")

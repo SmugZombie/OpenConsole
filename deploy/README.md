@@ -206,14 +206,18 @@ Joining never needs the secret — a ticket is the credential for that.
 
 ## The client installer
 
-The relay serves `/install.sh`, so guests can install the client from the same
-address they were sent:
+The relay serves `/install.sh` and `/install.ps1`, so guests can install the
+client from the same address they were sent:
 
 ```sh
 curl -fsSL https://console.example.com/install.sh | sh
 ```
 
-It downloads a release binary from GitHub, so a relay on a network without
+```powershell
+irm https://console.example.com/install.ps1 | iex
+```
+
+Both download a release binary from GitHub, so a relay on a network without
 outbound internet access should point people at
 `go install` or a mirror via `OPENCONSOLE_BASE_URL` instead.
 

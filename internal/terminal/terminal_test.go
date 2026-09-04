@@ -3,7 +3,6 @@
 package terminal
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -11,37 +10,6 @@ import (
 	"testing"
 	"time"
 )
-
-// readUntil reads from t until want appears or the deadline passes.
-func readUntil(t *testing.T, term *Terminal, want string, timeout time.Duration) string {
-	t.Helper()
-
-	var buf bytes.Buffer
-	found := make(chan struct{})
-	go func() {
-		p := make([]byte, 4096)
-		for {
-			n, err := term.Read(p)
-			if n > 0 {
-				buf.Write(p[:n])
-				if strings.Contains(buf.String(), want) {
-					close(found)
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	select {
-	case <-found:
-	case <-time.After(timeout):
-		t.Fatalf("timed out waiting for %q; got %q", want, buf.String())
-	}
-	return buf.String()
-}
 
 func TestStartRunsAShellAndEchoesOutput(t *testing.T) {
 	term, err := Start(Options{Shell: "/bin/sh", Cols: 100, Rows: 30})

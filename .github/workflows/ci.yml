@@ -38,6 +38,42 @@ jobs:
           GOOS=linux GOARCH=arm64 go build ./...
           GOOS=darwin GOARCH=arm64 go build ./...
           GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=windows GOARCH=arm64 go build ./...
+
+  windows:
+    name: Windows client
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      # The pseudo-console is the part of this that can only be tested on a
+      # real Windows: cross-compiling proves it builds, not that a shell ever
+      # starts on it. The race detector is left to the Linux job, which runs
+      # the same concurrent code with a C toolchain it can rely on.
+      - name: go test
+        run: go test ./...
+
+      # install.ps1 is only ever run by someone piping it into PowerShell, so
+      # a syntax error in it would first be found by a user. Parsing it here
+      # is the cheapest possible substitute for that.
+      - name: install.ps1 parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path web/public/install.ps1).Path, [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host $_ }
+            exit 1
+          }
 
   web:
     name: Browser client
