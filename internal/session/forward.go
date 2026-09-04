@@ -49,6 +49,11 @@ type forward struct {
 	// and so an overrun closes one forward instead of dropping the guest.
 	out    chan protocol.Frame
 	closed chan struct{}
+	// last carries a close the relay itself decided on. It has a slot of its
+	// own because the reason for sending one is usually that the ordinary
+	// queue is full, and a stream that is being given up on has to be able to
+	// say so even then.
+	last chan protocol.Frame
 }
 
 // openForward allocates a relay-side channel for a guest's request.
@@ -79,6 +84,7 @@ func (b *Bridge) openForward(g *guestConn, guestChan protocol.ChannelID) (*forwa
 		hostChan:  hostChan,
 		out:       make(chan protocol.Frame, forwardQueueDepth),
 		closed:    make(chan struct{}),
+		last:      make(chan protocol.Frame, 1),
 	}
 	b.forwards[hostChan] = f
 	g.channels[guestChan] = hostChan
@@ -116,6 +122,43 @@ func (b *Bridge) closeForward(hostChan protocol.ChannelID) *forward {
 	}
 	f.stop()
 	return f
+}
+
+// retireForward ends a forward the relay itself has given up on, and tells both
+// ends that it did.
+//
+// Nothing else says so. A forward dropped without a word leaves the guest
+// holding a socket that will never deliver another byte and never end, and the
+// host holding a target connection open for a stream nobody is reading. Both
+// wait for the other, and the relay is the only one that knows.
+//
+// The guest's notice is queued before the writer is stopped, because stopping
+// it is what makes the notice go out.
+func (b *Bridge) retireForward(ctx context.Context, hostChan protocol.ChannelID, reason string) {
+	fwd, ok := b.lookupHostChannel(hostChan)
+	if !ok {
+		return
+	}
+
+	notice := onChannel(mustControl(protocol.TypeClose, protocol.Close{Reason: reason}), fwd.guestChan)
+	select {
+	case fwd.last <- notice:
+	default:
+		// Something has already given this forward its last word. One is
+		// enough, and the first reason is the true one.
+	}
+
+	b.closeForward(hostChan)
+	b.tellHostForwardEnded(ctx, hostChan, reason)
+}
+
+// tellHostForwardEnded asks the host to drop its end of a forward.
+//
+// Best effort: the host may be gone, which is one of the ways a forward ends
+// in the first place.
+func (b *Bridge) tellHostForwardEnded(ctx context.Context, hostChan protocol.ChannelID, reason string) {
+	_ = b.toHost(ctx, onChannel(
+		mustControl(protocol.TypeClose, protocol.Close{Reason: reason}), hostChan))
 }
 
 // closeGuestForwards tears down every forward a guest owns, telling the host so
@@ -180,7 +223,11 @@ func (b *Bridge) runForwardWriter(ctx context.Context, s Stream, f *forward) {
 				b.log.Debug("forward write failed",
 					slog.String("session_id", b.id),
 					slog.Any("error", err))
-				f.stop()
+				// The guest cannot be told — telling it is what just failed —
+				// but the host is still there holding a socket open for a
+				// stream that has no reader. It should not have to guess.
+				b.closeForward(f.hostChan)
+				b.tellHostForwardEnded(ctx, f.hostChan, "the guest could not be written to")
 				return
 			}
 		}
@@ -212,6 +259,17 @@ func (b *Bridge) flushForward(ctx context.Context, s Stream, f *forward) {
 				return
 			}
 		default:
+			// Whatever the relay decided to say goes last, after the bytes it
+			// is closing behind.
+			select {
+			case fr := <-f.last:
+				if err := sendBounded(ctx, s, fr); err != nil {
+					b.log.Debug("forward close notice failed",
+						slog.String("session_id", b.id),
+						slog.Any("error", err))
+				}
+			default:
+			}
 			return
 		}
 	}
@@ -303,7 +361,7 @@ func (b *Bridge) refuseChannel(ctx context.Context, s Stream, ch protocol.Channe
 
 // fromHostChannel routes a frame the host sent on a forwarding channel back to
 // the one guest that owns it.
-func (b *Bridge) fromHostChannel(f protocol.Frame) {
+func (b *Bridge) fromHostChannel(ctx context.Context, f protocol.Frame) {
 	fwd, ok := b.lookupHostChannel(f.Channel)
 	if !ok {
 		// The guest closed the stream while the host was still writing. There
@@ -321,11 +379,13 @@ func (b *Bridge) fromHostChannel(f protocol.Frame) {
 	if !fwd.queue(out) && !closing {
 		// Flow control should have prevented this: the host cannot send more
 		// than the guest granted. Reaching here means a peer ignored the
-		// window, so close the one stream rather than drop bytes into it.
+		// window, so close the one stream rather than drop bytes into it —
+		// and say so to both ends, because a forwarded connection that simply
+		// stops is indistinguishable from one that is merely idle.
 		b.log.Warn("forward exceeded its window; closing it",
 			slog.String("session_id", b.id),
 			slog.Uint64("channel", uint64(f.Channel)))
-		b.closeForward(f.Channel)
+		b.retireForward(ctx, f.Channel, "the forward overran its window")
 		return
 	}
 
