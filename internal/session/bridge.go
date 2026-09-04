@@ -15,8 +15,14 @@ import (
 // It is declared here, by the consumer, rather than imported from the tunnel
 // package. That inversion is what keeps session management free of any
 // transport: the bridge can be exercised in tests with an in-memory pipe, and
-// the WebSocket implementation satisfies this interface without either package
-// knowing about the other.
+// the WebSocket and SSH implementations satisfy this interface without any of
+// the three packages knowing about each other.
+//
+// Send must be safe for concurrent use. The bridge is a fan-in point by
+// definition — every guest writes to the host, and a guest's read pump answers
+// PING while its write pump is draining output — so serialising writes is the
+// transport's job, not something each call site can be trusted to remember.
+// Recv is called from one goroutine per stream.
 type Stream interface {
 	Send(ctx context.Context, f protocol.Frame) error
 	Recv(ctx context.Context) (protocol.Frame, error)

@@ -72,6 +72,18 @@ func TestUnknownPathsAre404(t *testing.T) {
 	}
 }
 
+// http.FileServer renders an index listing for a directory, which would let a
+// bare /assets/ enumerate the bundle.
+func TestDirectoryListingIsNotServed(t *testing.T) {
+	rec := get(t, newMux(), "/assets/")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /assets/ = %d, want 404\n%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<a href=") {
+		t.Fatalf("GET /assets/ rendered a directory listing:\n%s", rec.Body.String())
+	}
+}
+
 func TestServesBrandAssets(t *testing.T) {
 	mux := newMux()
 	tests := []struct {

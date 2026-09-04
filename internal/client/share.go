@@ -17,6 +17,28 @@ import (
 // small bursts; a larger buffer would just sit idle.
 const ptyBufferSize = 16 << 10
 
+// errRelayTooSlow means the outbound queue filled: the relay or the network
+// could not keep up with the terminal.
+var errRelayTooSlow = errors.New("the relay is not keeping up with terminal output")
+
+// shareFailureMessage turns a failure into a line worth putting on someone's
+// terminal mid-session.
+//
+// Transport errors read like "tunnel: recv: failed to get reader: failed to
+// read frame header: EOF", which tells a person nothing while they are trying
+// to work. What matters on screen is that sharing stopped and their shell did
+// not; the underlying error is kept for the summary printed afterwards.
+func shareFailureMessage(err error) string {
+	switch {
+	case errors.Is(err, errRelayTooSlow):
+		return errRelayTooSlow.Error()
+	case errors.Is(err, context.DeadlineExceeded):
+		return "the relay stopped responding"
+	default:
+		return "lost contact with the relay"
+	}
+}
+
 // outboundQueue is how many frames may be waiting to go to the relay.
 //
 // The host's own shell must never stall because the relay or the network is
@@ -84,10 +106,14 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 	code, shareErr := runShare(ctx, term, conn, stdin, stdout)
 
 	restore()
+	// A mid-session failure was already reported on the terminal as it
+	// happened; this is the summary, not a second warning.
 	if shareErr != nil {
-		fmt.Fprintf(stderr, "\r\nopenconsole: sharing stopped: %v\r\n", shareErr)
+		fmt.Fprintf(stderr, "\nopenconsole: session %s ended (sharing had stopped: %v)\n",
+			sess.SessionID, shareErr)
+	} else {
+		fmt.Fprintf(stderr, "\nopenconsole: session %s ended\n", sess.SessionID)
 	}
-	fmt.Fprintf(stderr, "\r\nopenconsole: session %s ended\r\n", sess.SessionID)
 	return code, nil
 }
 
@@ -176,6 +202,32 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 		}
 	}()
 
+	// Losing the relay must not disturb the shell. Somebody is working in this
+	// terminal; the fact that nobody is watching any more is worth a line on
+	// their screen, not their session being torn out from under them.
+	//
+	// This runs as its own goroutine so the notice appears the moment sharing
+	// breaks. An idle shell produces no output for minutes at a time, and
+	// noticing only on the next read would leave the host typing into a
+	// session no one can see.
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-out.Failed():
+			// Drop the tunnel so the relay reclaims the session rather than
+			// holding it until the TTL.
+			conn.Close("sharing stopped")
+			if err := out.err(); err != nil {
+				// Raw mode is still on, so line endings need the carriage
+				// return.
+				fmt.Fprintf(stdout,
+					"\r\n[openconsole] sharing stopped: %s\r\n"+
+						"[openconsole] your shell is still running; type 'exit' to leave it\r\n",
+					shareFailureMessage(err))
+			}
+		}
+	}()
+
 	// Shell output to the local screen and to the relay. This runs on the
 	// calling goroutine: when it ends, the shell has ended.
 	buf := make([]byte, ptyBufferSize)
@@ -185,21 +237,20 @@ func runShare(ctx context.Context, term *terminal.Terminal, conn tunnel.Conn, st
 			if _, werr := stdout.Write(buf[:n]); werr != nil {
 				break
 			}
-			// Copy: the frame outlives this loop iteration once queued.
+			// Copy: the frame outlives this loop iteration once queued. send
+			// is a no-op once sharing has stopped.
 			out.send(protocol.NewData(append([]byte(nil), buf[:n]...)))
 		}
 		if err != nil {
 			break
 		}
-		if err := out.err(); err != nil {
-			// The relay is gone. Keep the local shell running and report it.
-			code, _ := waitShell(term)
-			return code, err
-		}
 	}
 
+	// The shell has exited. Only announce that to a relay still listening.
 	code, _ := waitShell(term)
-	sendClose(ctx, conn, code)
+	if !out.hasFailed() {
+		sendClose(ctx, conn, code)
+	}
 	return code, out.err()
 }
 
@@ -235,19 +286,47 @@ type sender struct {
 
 	mu      sync.Mutex
 	failure error
+
+	// failed is closed the first time sharing breaks. It is a channel rather
+	// than a flag so the failure can be acted on the moment it happens: the
+	// alternative, checking after each terminal read, never fires while the
+	// shell sits idle, and the host would go on typing into a session nobody
+	// is watching.
+	failed   chan struct{}
+	failOnce sync.Once
 }
 
 func newSender(conn tunnel.Conn, depth int) *sender {
-	return &sender{conn: conn, q: make(chan protocol.Frame, depth)}
+	return &sender{
+		conn:   conn,
+		q:      make(chan protocol.Frame, depth),
+		failed: make(chan struct{}),
+	}
+}
+
+// Failed is closed once sharing has broken.
+func (s *sender) Failed() <-chan struct{} { return s.failed }
+
+// hasFailed reports whether sharing has already broken.
+func (s *sender) hasFailed() bool {
+	select {
+	case <-s.failed:
+		return true
+	default:
+		return false
+	}
 }
 
 // send queues a frame. A full queue means the relay cannot keep up; sharing is
 // failed rather than blocking the caller, which would freeze the host's shell.
 func (s *sender) send(f protocol.Frame) {
+	if s.hasFailed() {
+		return
+	}
 	select {
 	case s.q <- f:
 	default:
-		s.fail(errors.New("relay is not keeping up with terminal output"))
+		s.fail(errRelayTooSlow)
 	}
 }
 
@@ -271,10 +350,11 @@ func (s *sender) fail(err error) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.failure == nil {
 		s.failure = err
 	}
+	s.mu.Unlock()
+	s.failOnce.Do(func() { close(s.failed) })
 }
 
 func (s *sender) err() error {

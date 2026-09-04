@@ -18,15 +18,23 @@ var ErrClosed = errors.New("tunnel: connection closed")
 
 // Conn is a bidirectional, frame-oriented connection.
 //
-// Send and Recv may each be called from one goroutine at a time. It is safe to
-// call Send and Recv concurrently with each other, and Close from any
-// goroutine — that is exactly the pattern a read pump plus a write pump needs.
+// Send must be safe for concurrent use, and implementations are responsible
+// for serialising the writes themselves. This is not incidental: a relay fans
+// terminal output in from every guest at once, and a guest answers a PING from
+// its read pump while its write pump is mid-frame. Pushing that coordination
+// out to callers would mean every one of them reinventing the same mutex, and
+// forgetting it would corrupt the stream rather than fail loudly.
+//
+// Recv must be called from a single goroutine, which is the natural shape of a
+// read pump. It is safe concurrently with Send and Close.
 type Conn interface {
 	// Send transmits one frame. The frame's payload is not retained.
+	// Safe for concurrent use.
 	Send(ctx context.Context, f protocol.Frame) error
 
-	// Recv blocks for the next frame. The returned payload is owned by the
-	// caller and stays valid until the following Recv.
+	// Recv blocks for the next frame. Call it from one goroutine only. The
+	// returned payload is owned by the caller and stays valid until the
+	// following Recv.
 	Recv(ctx context.Context) (protocol.Frame, error)
 
 	// Close shuts the connection down, reporting reason to the peer where the

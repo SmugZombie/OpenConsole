@@ -84,6 +84,14 @@ and neither package imports the other. Session management therefore has no
 transport dependency at all, and the whole fan-out is tested against an
 in-memory pipe with no network involved.
 
+`Send` is part of that contract: it must be safe for concurrent use, and each
+transport serialises its own writes. A relay is a fan-in point by definition —
+every guest writes to one host, and a guest's read pump answers `PING` while its
+write pump is mid-frame — so pushing that coordination out to callers would mean
+every call site reinventing the same mutex, and forgetting it would corrupt a
+stream rather than fail loudly. `Recv` is called from one goroutine per stream,
+which is the natural shape of a read pump.
+
 ## Session model
 
 A session carries three distinct values, and the distinction is the security
@@ -193,8 +201,10 @@ output, so it has something on screen immediately rather than a blank rectangle.
   10 seconds. `http.Server.Shutdown` does not touch hijacked WebSocket
   connections, so tunnels are closed explicitly — peers are told, then the
   context their goroutines are parked on is cancelled.
-- **Panic recovery**: a panic in one request must not drop every live session on
-  the process, so the handler chain recovers and returns a 500.
+- **Panic recovery**: a panic must not drop every live session on the process.
+  The HTTP handler chain recovers and returns a 500; the SSH server recovers in
+  its per-connection goroutine, which is the top-level entry point for an
+  untrusted peer and has nothing above it that could.
 
 One subtlety worth recording, because it cost a debugging session: the logging
 middleware wraps `http.ResponseWriter`, and a wrapper that does not implement

@@ -35,6 +35,11 @@ type channelStream struct {
 	// the only thing that fills this.
 	readBuf []byte
 
+	// writeMu serialises writes, which the Stream contract requires: the
+	// bridge's writer goroutine drains terminal output while the reader
+	// goroutine answers PING on the same channel.
+	writeMu sync.Mutex
+
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -51,7 +56,10 @@ func (s *channelStream) Send(ctx context.Context, f protocol.Frame) error {
 
 	switch f.Type {
 	case protocol.TypeData:
-		if _, err := s.ch.Write(f.Payload); err != nil {
+		s.writeMu.Lock()
+		_, err := s.ch.Write(f.Payload)
+		s.writeMu.Unlock()
+		if err != nil {
 			return fmt.Errorf("sshd: write: %w", err)
 		}
 		return nil
@@ -65,7 +73,9 @@ func (s *channelStream) Send(ctx context.Context, f protocol.Frame) error {
 		var c protocol.Close
 		_ = protocol.DecodeControl(f, &c)
 		if c.Reason != "" {
+			s.writeMu.Lock()
 			fmt.Fprintf(s.ch.Stderr(), "\r\nopenconsole: %s\r\n", c.Reason)
+			s.writeMu.Unlock()
 		}
 		// Pass the host shell's exit status through, so `ssh ... && echo ok`
 		// behaves the way it would against a real shell.
@@ -83,7 +93,9 @@ func (s *channelStream) Send(ctx context.Context, f protocol.Frame) error {
 		if msg == "" {
 			msg = e.Code
 		}
+		s.writeMu.Lock()
 		fmt.Fprintf(s.ch.Stderr(), "\r\nopenconsole: %s\r\n", msg)
+		s.writeMu.Unlock()
 		sendExitStatus(s.ch, 1)
 		return s.Close(msg)
 

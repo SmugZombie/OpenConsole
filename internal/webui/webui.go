@@ -95,9 +95,33 @@ func indexHandler(index []byte) http.Handler {
 	})
 }
 
+// noDirFS hides directories from the file server.
+//
+// http.FileServer renders an index listing for a directory, so a bare
+// /assets/ would enumerate the bundle. It is not a secret, but a relay should
+// not answer requests nobody meant to make.
+type noDirFS struct{ fs.FS }
+
+func (n noDirFS) Open(name string) (fs.File, error) {
+	f, err := n.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		f.Close()
+		return nil, fs.ErrNotExist
+	}
+	return f, nil
+}
+
 // fileHandler serves static files out of the bundle.
 func fileHandler(assets fs.FS) http.Handler {
-	srv := http.FileServer(http.FS(assets))
+	srv := http.FileServer(http.FS(noDirFS{assets}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w)
 		// Vite fingerprints asset filenames with a content hash, so a given URL's

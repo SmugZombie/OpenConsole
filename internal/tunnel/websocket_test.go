@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -135,6 +136,50 @@ func TestWebSocketRecvHonoursContext(t *testing.T) {
 
 	if _, err := client.Recv(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Recv = %v, want DeadlineExceeded", err)
+	}
+}
+
+// The Conn contract promises concurrent Send. The relay relies on it: guests
+// fan terminal input into one host connection, and a read pump answers PING
+// while a write pump is mid-frame.
+func TestConcurrentSendIsSafe(t *testing.T) {
+	client, server := pair(t)
+	ctx := context.Background()
+
+	// Drain so the connection does not block on a full buffer.
+	go func() {
+		for {
+			if _, err := server.Recv(ctx); err != nil {
+				return
+			}
+		}
+	}()
+
+	const writers, each = 8, 25
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				var err error
+				if i%3 == 0 {
+					err = client.Send(ctx, protocol.Frame{Type: protocol.TypePong})
+				} else {
+					err = client.Send(ctx, protocol.NewData([]byte("terminal output")))
+				}
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent Send: %v", err)
 	}
 }
 

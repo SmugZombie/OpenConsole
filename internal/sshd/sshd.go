@@ -162,6 +162,19 @@ func (s *Server) Run(ctx context.Context) error {
 		s.conns.Add(1)
 		go func() {
 			defer s.conns.Done()
+			// One malformed connection must not take the relay down with it.
+			// This goroutine is the top-level entry point for an untrusted
+			// peer and nothing above it can recover, so a panic here would
+			// end every live terminal on the process — the same reasoning as
+			// the HTTP handler chain's recovery.
+			defer func() {
+				if v := recover(); v != nil {
+					s.log.Error("panic serving ssh connection",
+						slog.String("remote", host(conn.RemoteAddr())),
+						slog.Any("panic", v))
+					conn.Close()
+				}
+			}()
 			s.handleConn(ctx, conn)
 		}()
 	}
@@ -262,7 +275,17 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 	defer conn.Close()
 	_ = nConn.SetDeadline(time.Time{})
 
-	sessionID := conn.Permissions.Extensions[sessionIDKey]
+	// Every authentication path sets this. A connection without it got here
+	// some way this code does not know about, so refuse rather than guess.
+	sessionID := ""
+	if conn.Permissions != nil {
+		sessionID = conn.Permissions.Extensions[sessionIDKey]
+	}
+	if sessionID == "" {
+		s.log.Error("authenticated ssh connection carries no session",
+			slog.String("remote", host(nConn.RemoteAddr())))
+		return
+	}
 
 	// Global requests are all things this relay does not do: port forwarding,
 	// keepalive extensions, and so on. Rejecting them is the policy.

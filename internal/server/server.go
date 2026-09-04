@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -28,6 +29,9 @@ type Server struct {
 
 	// ssh is the optional SSH listener. Nil when SSH is disabled.
 	ssh *sshd.Server
+
+	// teardownOnce guards cleanup, which every exit path from Run reaches.
+	teardownOnce sync.Once
 
 	// baseCtx bounds every live tunnel. WebSocket connections are hijacked,
 	// so http.Server.Shutdown does not wait for them or close them; cancelling
@@ -152,6 +156,12 @@ func (s *Server) Run(ctx context.Context) error {
 	defer stopSweeper()
 	go s.sessions.Run(sweeperCtx)
 
+	// Every exit path tears the relay down, including the one where Serve
+	// fails on its own. Without this, an HTTP failure would leave the SSH
+	// listener accepting connections and the tunnel goroutines running, owned
+	// by a server that has already returned.
+	defer s.teardown()
+
 	if s.ssh != nil {
 		s.log.Info("ssh joins enabled", slog.String("addr", s.SSHAddr()))
 		go func() {
@@ -187,24 +197,33 @@ func (s *Server) Run(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout())
 	defer cancel()
 
+	// Drain in-flight requests first; the deferred teardown then closes the
+	// listeners and the tunnels Shutdown cannot reach.
 	err := s.http.Shutdown(shutdownCtx)
-
-	if s.ssh != nil {
-		_ = s.ssh.Close()
-	}
-
-	// Shutdown does not touch hijacked WebSocket connections, so tunnels are
-	// closed explicitly: tell peers first, then cancel the context their
-	// goroutines are parked on.
-	s.bridges.CloseAll("relay shutting down")
-	s.baseCancel()
+	s.teardown()
 	stopSweeper()
-	s.sessions.Close()
 	if err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	s.log.Info("shutdown complete")
 	return nil
+}
+
+// teardown closes the listeners and every live tunnel. It is safe to call more
+// than once, which is what lets both the graceful path and the deferred
+// failure path call it.
+func (s *Server) teardown() {
+	s.teardownOnce.Do(func() {
+		if s.ssh != nil {
+			_ = s.ssh.Close()
+		}
+		// http.Server.Shutdown does not touch hijacked WebSocket connections,
+		// so tunnels are closed explicitly: tell peers first, then cancel the
+		// context their goroutines are parked on.
+		s.bridges.CloseAll("relay shutting down")
+		s.baseCancel()
+		s.sessions.Close()
+	})
 }
 
 func (s *Server) shutdownTimeout() time.Duration {
