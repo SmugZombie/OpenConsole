@@ -37,8 +37,14 @@ services:
       # Where guests should ssh to, when that is not the name they reached the
       # API on. An HTTP proxy in front carries HTTP and not arbitrary TCP
       # ports, so ssh usually needs a name of its own pointed straight here.
-      # Leave unset when both arrive at the same place.
-      # OPENCONSOLE_SSH_HOST: "ssh.example.com:22"
+      #
+      # Interpolated like the settings above, so exporting it or putting it in
+      # a .env file is enough:
+      #
+      #     OPENCONSOLE_SSH_HOST=ssh.example.com:22
+      #
+      # Empty means guests are told the host they reached the API on.
+      OPENCONSOLE_SSH_HOST: "${OPENCONSOLE_SSH_HOST:-}"
 
     volumes:
       # The only state the relay keeps on disk. Sessions stay in memory.

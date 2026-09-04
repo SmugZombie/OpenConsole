@@ -29,7 +29,11 @@ type Server struct {
 
 	// ssh is the optional SSH listener. Nil when SSH is disabled.
 	ssh *sshd.Server
-	api *API
+	// What guests are told to ssh to. An empty host means the one they
+	// reached the API on.
+	sshAdvertiseHost string
+	sshAdvertisePort int
+	api              *API
 
 	// teardownOnce guards cleanup, which every exit path from Run reaches.
 	teardownOnce sync.Once
@@ -73,35 +77,40 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 		ln.Close()
 		return nil, err
 	}
+	advertiseHost, advertisePort := "", 0
 	if sshServer != nil {
 		// Advertised to clients so the host CLI can print a working ssh
 		// command. The port is taken from the bound listener rather than the
 		// configured address, so ":0" in a test resolves correctly.
 		if _, port, err := net.SplitHostPort(sshServer.Addr()); err == nil {
 			if n, err := strconv.Atoi(port); err == nil {
-				api.SetSSHPort(n)
+				advertisePort = n
 			}
 		}
 		// An operator who fronts SSH on its own name overrides that here. A
 		// bare host keeps the listening port; a host:port replaces it.
 		if host, port, err := ParseSSHAdvertise(cfg.SSHAdvertise); err == nil && host != "" {
-			api.SetSSHHost(host)
+			advertiseHost = host
 			if port != 0 {
-				api.SetSSHPort(port)
+				advertisePort = port
 			}
 		}
+		api.SetSSHPort(advertisePort)
+		api.SetSSHHost(advertiseHost)
 	}
 
 	return &Server{
-		cfg:        cfg,
-		log:        log,
-		sessions:   sessions,
-		bridges:    bridges,
-		ln:         ln,
-		ssh:        sshServer,
-		api:        api,
-		baseCtx:    baseCtx,
-		baseCancel: baseCancel,
+		cfg:              cfg,
+		log:              log,
+		sessions:         sessions,
+		bridges:          bridges,
+		ln:               ln,
+		ssh:              sshServer,
+		api:              api,
+		sshAdvertiseHost: advertiseHost,
+		sshAdvertisePort: advertisePort,
+		baseCtx:          baseCtx,
+		baseCancel:       baseCancel,
 		http: &http.Server{
 			Handler:           api.Routes(),
 			ReadHeaderTimeout: DefaultReadHeaderTimeout,
@@ -178,9 +187,18 @@ func (s *Server) Run(ctx context.Context) error {
 	defer s.teardown()
 
 	if s.ssh != nil {
+		// Says outright what guests will be told, rather than leaving an
+		// empty field to interpret. A host of "-" means they are told the
+		// name they reached the API on, which is the common case and also
+		// what a missing OPENCONSOLE_SSH_HOST looks like.
+		told := s.sshAdvertiseHost
+		if told == "" {
+			told = "- (the host they reached the API on)"
+		}
 		s.log.Info("ssh joins enabled",
-			slog.String("addr", s.SSHAddr()),
-			slog.String("advertised_as", s.cfg.SSHAdvertise))
+			slog.String("listening_on", s.SSHAddr()),
+			slog.String("guests_told_host", told),
+			slog.Int("guests_told_port", s.sshAdvertisePort))
 		go func() {
 			if err := s.ssh.Run(ctx); err != nil {
 				s.log.Error("ssh listener stopped", slog.Any("error", err))

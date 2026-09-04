@@ -108,13 +108,27 @@ An HTTP reverse proxy — Cloudflare's included — carries HTTP, not arbitrary 
 ports. So SSH usually cannot share the name the site is on, and ends up on one
 of its own pointed straight at the relay.
 
-The relay knows what it *listens* on, not how it is *reached*, so tell it:
+The relay knows what it *listens* on, not how it is *reached*, so tell it. The
+compose file interpolates it, so exporting it or putting it in a `.env` beside
+the compose file is enough:
 
-```yaml
-environment:
-  OPENCONSOLE_SSH_ADDR: ":2222"                 # where it listens
-  OPENCONSOLE_SSH_HOST: "ssh.example.com:22"    # what to tell guests
+```sh
+OPENCONSOLE_SSH_HOST=ssh.example.com:22
 ```
+
+Check it arrived — the relay says outright what guests will be told:
+
+```sh
+docker compose -f deploy/docker-compose.yml logs relay | grep 'ssh joins enabled'
+```
+
+```
+"msg":"ssh joins enabled","listening_on":"[::]:2222",
+"guests_told_host":"ssh.example.com","guests_told_port":22
+```
+
+A `guests_told_host` of `-` means the setting did not reach the process, and
+guests are being told whichever host they reached the API on.
 
 That name must resolve straight to the relay, bypassing the proxy — an orange
 cloud in Cloudflare will not pass port 22 or 2222.
