@@ -111,6 +111,14 @@ func startOnConsole(console windows.Handle, path string, opts Options) (int, win
 		StartupInfo:             windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{}))},
 		ProcThreadAttributeList: attrs.List(),
 	}
+	// STARTF_USESTDHANDLES with all three handles left null. This looks like a
+	// no-op and is not: without it a child takes its standard handles from
+	// this process, and a pseudo-console attachment does not stop it. The
+	// shell then writes to whatever openconsole's own stdout is — under `go
+	// test`, the test runner's pipe — while dutifully setting the title on a
+	// console nobody can read. Saying "use the handles I am giving you", and
+	// giving none, is what makes Windows hand it the console's own.
+	si.StartupInfo.Flags |= windows.STARTF_USESTDHANDLES
 
 	exe, err := windows.UTF16PtrFromString(path)
 	if err != nil {
