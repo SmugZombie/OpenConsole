@@ -183,6 +183,32 @@ func TestForwardEnforcesChannelLimit(t *testing.T) {
 	}
 }
 
+// A CLOSE the relay has already accepted must still reach the guest when the
+// forward is stopped in the same breath.
+//
+// The queue and the stop become ready together, so one round of this passes by
+// luck about half the time — which is exactly how the bug survived. Twenty-five
+// rounds do not.
+func TestForwardCloseIsNotLostWhenTheForwardStops(t *testing.T) {
+	b, host, _ := startBridge(t)
+
+	g := newFakeStream()
+	go func() { _ = b.ServeGuest(context.Background(), g, GuestOptions{Access: AccessGuest}) }()
+	waitGuests(t, b, 1)
+
+	for i := 1; i <= 25; i++ {
+		guestChan := protocol.ChannelID(i)
+		openChannel(t, g, guestChan, "localhost", 5432)
+		hostChan := host.next(t, protocol.TypeOpen).Channel
+
+		closeFrame := mustControl(protocol.TypeClose, protocol.Close{Reason: "target closed"})
+		closeFrame.Channel = hostChan
+		host.in <- closeFrame
+
+		g.nextOn(t, protocol.TypeClose, guestChan)
+	}
+}
+
 func TestForwardClosePropagates(t *testing.T) {
 	b, host, _ := startBridge(t)
 
