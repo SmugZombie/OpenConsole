@@ -183,6 +183,61 @@ func TestForwardEnforcesChannelLimit(t *testing.T) {
 	}
 }
 
+// A forward the relay gives up on must be closed to both ends, not simply
+// dropped.
+//
+// The failure this prevents is silence: the guest keeps a socket open that
+// never delivers another byte and never ends, and the host holds the target
+// connection open for a stream nobody is reading. Both wait, and only the
+// relay knows why.
+func TestRelayTellsBothEndsWhenItGivesUpOnAForward(t *testing.T) {
+	b, host, _ := startBridge(t)
+
+	// A guest whose stream accepts almost nothing, so its writer stalls and
+	// the relay's queue behind it fills. Flow control normally prevents this;
+	// the point here is what happens when something has gone wrong anyway.
+	g := &fakeStream{
+		in:     make(chan protocol.Frame, 64),
+		out:    make(chan protocol.Frame, 1),
+		closed: make(chan struct{}),
+	}
+	go func() { _ = b.ServeGuest(context.Background(), g, GuestOptions{Access: AccessGuest}) }()
+	waitGuests(t, b, 1)
+
+	openChannel(t, g, 1, "localhost", 5432)
+	hostChan := host.next(t, protocol.TypeOpen).Channel
+
+	// Overrun the queue. The guest is not draining, so these pile up behind a
+	// writer that cannot move.
+	for i := 0; i < forwardQueueDepth*2; i++ {
+		host.in <- protocol.Frame{Type: protocol.TypeData, Channel: hostChan, Payload: []byte("bulk")}
+	}
+
+	// The host is told, so it can drop the target socket.
+	closed := host.nextOn(t, protocol.TypeClose, hostChan)
+	var c protocol.Close
+	if err := protocol.DecodeControl(closed, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Reason == "" {
+		t.Error("the host was told the forward ended, but not why")
+	}
+
+	// And the guest is told too, once its stream can take anything again.
+	// Draining is what a guest coming back to life looks like.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case fr := <-g.out:
+			if fr.Type == protocol.TypeClose && fr.Channel == 1 {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the guest was never told its forward had ended")
+		}
+	}
+}
+
 // A CLOSE the relay has already accepted must still reach the guest when the
 // forward is stopped in the same breath.
 //

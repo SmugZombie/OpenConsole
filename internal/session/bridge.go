@@ -220,7 +220,7 @@ func (b *Bridge) serveHost(ctx context.Context, s Stream, cols, rows uint16, enc
 		// Anything on a non-zero channel belongs to one forwarded stream and
 		// one guest, not to everybody watching the terminal.
 		if !f.Channel.IsTerminal() {
-			b.fromHostChannel(f)
+			b.fromHostChannel(ctx, f)
 			continue
 		}
 
