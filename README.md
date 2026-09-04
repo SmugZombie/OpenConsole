@@ -28,6 +28,9 @@ openconsole: sharing this terminal
   with any ssh client:
     ssh -p 2222 x5s5gzxptgfksy3hu75jmcoltm@console.example.com
 
+  watch only (cannot type):
+    https://console.example.com/s/x5s5gzxptgfksy3hu75jmcoltm#lckndqddit…
+
   The ticket grants full control of this terminal. Send it privately,
   and type 'exit' here to end the session.
 
@@ -182,8 +185,9 @@ curl -s localhost:8080/api/v1/sessions/x5s5…
 | `GET` | `/` | Browser client: paste a ticket to join |
 | `GET` | `/s/{id}` | Browser terminal; the token comes from the URL fragment |
 
-`host_token` and `guest_token` are shown once and never repeated by another
-endpoint or written to a log. Unknown, malformed and expired IDs all answer an
+`host_token`, `guest_token` and `viewer_token` are shown once and never repeated
+by another endpoint or written to a log. The viewer token grants watch-only
+access, so it can be handed out without also handing over the keyboard. Unknown, malformed and expired IDs all answer an
 identical 404.
 
 ## Configuration
@@ -213,6 +217,7 @@ rather than guessed at.
 | --- | --- | --- | --- |
 | `-server` | `OPENCONSOLE_SERVER` | `http://localhost:8080` | Relay base URL |
 | `-shell` | — | `$SHELL` | Shell to run |
+| `-read-only` | — | — | Join without typing (`join` only) |
 | `-version` | — | — | Print version and exit |
 | — | `OPENCONSOLE_TICKET` | — | Ticket for `join`, so it stays out of `ps` |
 
@@ -280,6 +285,10 @@ working UI. Rebuild and commit it alongside any change under `web/src`. See
   in the `OPEN` frame rather than a URL, so they stay out of access logs,
   browser history and `Referer` headers. That is why there is one tunnel
   endpoint instead of a path per session.
+- **Capability lives in the token, not in a flag.** A viewer link is read-only
+  because the relay reads the token and says so; no client is trusted to ask for
+  less than it could take. The acknowledgement reports what was granted, so a
+  guest is told what it may do rather than discovering it by being ignored.
 - **All identifiers come from `crypto/rand`** — 128 bits for session IDs, 256
   for tokens, compared with `subtle.ConstantTimeCompare`. `math/rand` is never
   used.
@@ -303,9 +312,8 @@ Not yet suitable for exposure to the public internet:
 - Session creation is unauthenticated and unrate-limited.
 - The relay sees plaintext terminal traffic — it can read and inject keystrokes.
   End-to-end encryption is roadmap, so "self-hosted" is doing real work here.
-- Anyone holding a ticket or link has full write access; read-only guests are
-  roadmap. A link is a bearer capability and cannot be revoked short of ending
-  the session.
+- A link is a bearer capability and cannot be revoked short of ending the
+  session. Hand out the watch-only link when someone only needs to look.
 - SSH auth is bounded per connection but not across them; nothing rate-limits
   connections per source.
 - TLS is assumed to be terminated by a proxy in front of the relay.

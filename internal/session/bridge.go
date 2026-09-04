@@ -76,6 +76,13 @@ type Bridge struct {
 	onClosed func()
 }
 
+// GuestOptions configures one attached guest.
+type GuestOptions struct {
+	// Access decides whether this guest may type. It comes from the relay's
+	// own reading of the token, never from anything the client claimed.
+	Access Access
+}
+
 // guestConn is one attached guest and its outbound queue.
 //
 // Teardown has two flavours, and the difference is visible to the person at the
@@ -88,6 +95,10 @@ type guestConn struct {
 	out    chan protocol.Frame
 	closed chan struct{} // writer should flush and exit
 	dead   chan struct{} // transport must be torn down now
+
+	// canWrite is fixed when the guest attaches and never changes, so it needs
+	// no lock.
+	canWrite bool
 
 	stopOnce sync.Once
 	killOnce sync.Once
@@ -212,12 +223,21 @@ func (b *Bridge) ServeHost(ctx context.Context, s Stream, cols, rows uint16) err
 
 // ServeGuest pumps frames for one guest until it disconnects or the session
 // ends. It blocks.
-func (b *Bridge) ServeGuest(ctx context.Context, s Stream) error {
+//
+// Access is enforced here rather than at the edge so every transport gets it:
+// a read-only guest arriving over a WebSocket, an SSH channel, or anything
+// added later is silenced by the same code path.
+func (b *Bridge) ServeGuest(ctx context.Context, s Stream, opts GuestOptions) error {
 	g := &guestConn{
 		out:    make(chan protocol.Frame, guestQueueDepth),
 		closed: make(chan struct{}),
 		dead:   make(chan struct{}),
 	}
+
+	if opts.Access == "" {
+		opts.Access = AccessGuest
+	}
+	g.canWrite = opts.Access.CanWrite()
 
 	b.mu.Lock()
 	if b.closed || b.host == nil {
@@ -230,7 +250,10 @@ func (b *Bridge) ServeGuest(ctx context.Context, s Stream) error {
 	n := len(b.guests)
 	b.mu.Unlock()
 
-	b.log.Info("guest attached", slog.String("session_id", b.id), slog.Int("guests", n))
+	b.log.Info("guest attached",
+		slog.String("session_id", b.id),
+		slog.String("access", string(opts.Access)),
+		slog.Int("guests", n))
 	defer func() {
 		b.mu.Lock()
 		delete(b.guests, g)
@@ -308,7 +331,7 @@ func (b *Bridge) ServeGuest(ctx context.Context, s Stream) error {
 				readErr <- err
 				return
 			}
-			if err := b.fromGuest(ctx, s, f); err != nil {
+			if err := b.fromGuest(ctx, s, g, f); err != nil {
 				readErr <- err
 				return
 			}
@@ -326,9 +349,15 @@ func (b *Bridge) ServeGuest(ctx context.Context, s Stream) error {
 }
 
 // fromGuest handles one frame arriving from a guest.
-func (b *Bridge) fromGuest(ctx context.Context, s Stream, f protocol.Frame) error {
+func (b *Bridge) fromGuest(ctx context.Context, s Stream, g *guestConn, f protocol.Frame) error {
 	switch f.Type {
 	case protocol.TypeData:
+		if !g.canWrite {
+			// Dropped rather than answered with an error: the client was told
+			// it was read-only in the OPEN acknowledgement, and a stream of
+			// complaints for every keystroke would be worse than silence.
+			return nil
+		}
 		return b.toHost(ctx, protocol.Frame{Type: protocol.TypeData, Payload: f.Payload})
 
 	case protocol.TypeResize:

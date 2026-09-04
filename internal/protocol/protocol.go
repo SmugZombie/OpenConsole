@@ -109,6 +109,14 @@ const (
 	RoleHost Role = "host"
 	// RoleGuest is a participant attaching to a shared terminal.
 	RoleGuest Role = "guest"
+	// RoleViewer may watch a terminal but not type into it.
+	//
+	// A client sends this to ask for read-only access even when it holds a
+	// credential that would allow more — useful for looking over someone's
+	// shoulder without the risk of a stray keystroke. What a connection
+	// actually gets is decided by the relay from the token, and reported back
+	// in the OPEN acknowledgement.
+	RoleViewer Role = "viewer"
 )
 
 // Open is the JSON body of a TypeOpen frame.

@@ -16,6 +16,7 @@ import {
   type ClosePayload,
   type ErrorPayload,
   type Frame,
+  type OpenPayload,
   type ResizePayload,
 } from './protocol';
 
@@ -32,6 +33,14 @@ export interface TunnelHandlers {
   onResize(size: ResizePayload): void;
   /** Connection state changed; `detail` is a human-readable reason. */
   onStatus(status: Status, detail?: string): void;
+  /**
+   * The relay said what this connection may do. Called once, on attach.
+   *
+   * The answer comes from the relay's reading of the token, not from anything
+   * this page asked for, so a viewer link is read-only no matter what the
+   * client does.
+   */
+  onAccess(readOnly: boolean): void;
 }
 
 /** How a session ended, so the UI can say something useful. */
@@ -78,6 +87,7 @@ export class Tunnel {
   private ws: WebSocket | null = null;
   private readonly opts: TunnelOptions;
   private opened = false;
+  private readOnly = false;
   private ending: Ending | null = null;
 
   constructor(opts: TunnelOptions) {
@@ -161,13 +171,20 @@ export class Tunnel {
     const { handlers } = this.opts;
 
     switch (frame.type) {
-      case 'OPEN':
+      case 'OPEN': {
         // The relay acknowledges with OPEN only once the connection is
         // genuinely attached to a live terminal, so this is the point at which
         // there is something to show.
         this.opened = true;
+        const ack = (frame.payload ?? {}) as OpenPayload;
+        // Anything other than an explicit "guest" is treated as read-only:
+        // erring towards the narrower capability means a relay that says
+        // something unexpected cannot accidentally hand over the keyboard.
+        this.readOnly = ack.role !== 'guest';
+        handlers.onAccess(this.readOnly);
         handlers.onStatus('connected');
         break;
+      }
 
       case 'DATA':
         handlers.onData(frame.payload as Uint8Array);
@@ -206,8 +223,16 @@ export class Tunnel {
     }
   }
 
+  /** True when the relay granted watch-only access. */
+  get isReadOnly(): boolean {
+    return this.readOnly;
+  }
+
   /** Sends a keystroke, or anything else the user typed, to the terminal. */
   write(bytes: Uint8Array): void {
+    // The relay drops a viewer's input anyway; not sending it keeps the
+    // intent visible here and saves the round trip.
+    if (this.readOnly) return;
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.send(encodeData(bytes));
     }

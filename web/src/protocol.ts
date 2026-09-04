@@ -56,7 +56,7 @@ export interface Frame {
 export interface OpenPayload {
   version: number;
   session_id: string;
-  role: 'host' | 'guest';
+  role: 'host' | 'guest' | 'viewer';
   token?: string;
   cols?: number;
   rows?: number;

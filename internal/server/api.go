@@ -34,12 +34,15 @@ type healthResponse struct {
 // createSessionResponse is returned once, to the creator, and is the only
 // place tokens ever leave the process. Subsequent lookups never include them.
 type createSessionResponse struct {
-	SessionID  string    `json:"session_id"`
-	HostToken  string    `json:"host_token"`
-	GuestToken string    `json:"guest_token"`
-	CreatedAt  time.Time `json:"created_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	ExpiresIn  int       `json:"expires_in_seconds"`
+	SessionID  string `json:"session_id"`
+	HostToken  string `json:"host_token"`
+	GuestToken string `json:"guest_token"`
+	// ViewerToken grants read-only access. Separate from GuestToken so a
+	// watch-only link can be handed out without also handing over the keyboard.
+	ViewerToken string    `json:"viewer_token"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	ExpiresIn   int       `json:"expires_in_seconds"`
 	// SSHPort is the relay's SSH port, present only when SSH joins are
 	// enabled. It is relay capability rather than session state, but it is
 	// returned here so the host CLI can print the ssh command without a second
@@ -157,13 +160,14 @@ func (a *API) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	)
 
 	writeJSON(w, http.StatusCreated, createSessionResponse{
-		SessionID:  s.SessionID,
-		HostToken:  s.HostToken,
-		GuestToken: s.GuestToken,
-		CreatedAt:  s.CreatedAt.UTC(),
-		ExpiresAt:  s.ExpiresAt.UTC(),
-		ExpiresIn:  int(s.ExpiresAt.Sub(a.now()).Seconds()),
-		SSHPort:    a.sshPort,
+		SessionID:   s.SessionID,
+		HostToken:   s.HostToken,
+		GuestToken:  s.GuestToken,
+		ViewerToken: s.ViewerToken,
+		CreatedAt:   s.CreatedAt.UTC(),
+		ExpiresAt:   s.ExpiresAt.UTC(),
+		ExpiresIn:   int(s.ExpiresAt.Sub(a.now()).Seconds()),
+		SSHPort:     a.sshPort,
 	})
 }
 

@@ -91,14 +91,19 @@ func (m *Manager) Create(ctx context.Context) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	viewerToken, err := NewToken()
+	if err != nil {
+		return nil, err
+	}
 
 	now := m.now()
 	s := &Session{
-		SessionID:  id,
-		HostToken:  hostToken,
-		GuestToken: guestToken,
-		CreatedAt:  now,
-		ExpiresAt:  now.Add(m.ttl),
+		SessionID:   id,
+		HostToken:   hostToken,
+		GuestToken:  guestToken,
+		ViewerToken: viewerToken,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(m.ttl),
 	}
 
 	m.mu.Lock()

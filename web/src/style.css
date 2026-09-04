@@ -229,6 +229,19 @@ code {
   background: var(--err);
 }
 
+/* Read-only is a state someone needs to notice before they start typing, so it
+   sits next to the connection status rather than in a corner. */
+.badge {
+  padding: 2px 7px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 #terminal-wrap {
   flex: 1;
   min-height: 0;

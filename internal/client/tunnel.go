@@ -14,22 +14,28 @@ import (
 const openTimeout = 20 * time.Second
 
 // openTunnel dials the relay and completes the OPEN handshake, returning a
-// connection that is authenticated and attached to a session.
+// connection that is authenticated and attached to a session, along with the
+// access the relay granted.
+//
+// The granted role comes from the relay's acknowledgement rather than what was
+// asked for: a viewer ticket presented as an ordinary join is accepted and
+// answered with "viewer", so the client learns what it may do instead of
+// finding out by having its keystrokes ignored.
 //
 // The caller closes the returned connection.
-func openTunnel(ctx context.Context, url string, open protocol.Open) (tunnel.Conn, error) {
+func openTunnel(ctx context.Context, url string, open protocol.Open) (tunnel.Conn, protocol.Role, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
 
 	conn, err := tunnel.Dial(dialCtx, url, tunnel.DialOptions{})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	open.Version = protocol.Version
 	if err := tunnel.SendControl(dialCtx, conn, protocol.TypeOpen, open); err != nil {
 		conn.Close("handshake failed")
-		return nil, fmt.Errorf("sending OPEN: %w", err)
+		return nil, "", fmt.Errorf("sending OPEN: %w", err)
 	}
 
 	// The relay answers with OPEN to confirm the attachment, or ERROR to
@@ -38,20 +44,31 @@ func openTunnel(ctx context.Context, url string, open protocol.Open) (tunnel.Con
 	f, err := conn.Recv(dialCtx)
 	if err != nil {
 		conn.Close("handshake failed")
-		return nil, fmt.Errorf("waiting for relay: %w", err)
+		return nil, "", fmt.Errorf("waiting for relay: %w", err)
 	}
 
 	switch f.Type {
 	case protocol.TypeOpen:
-		return conn, nil
+		var ack protocol.Open
+		if err := protocol.DecodeControl(f, &ack); err != nil {
+			conn.Close("protocol error")
+			return nil, "", fmt.Errorf("malformed acknowledgement: %w", err)
+		}
+		granted := ack.Role
+		if granted == "" {
+			// A relay from before roles were reported back. Assume the
+			// narrower capability rather than the wider one.
+			granted = protocol.RoleViewer
+		}
+		return conn, granted, nil
 	case protocol.TypeError:
 		var e protocol.Error
 		_ = protocol.DecodeControl(f, &e)
 		conn.Close("rejected")
-		return nil, relayRefusal(e)
+		return nil, "", relayRefusal(e)
 	default:
 		conn.Close("protocol error")
-		return nil, fmt.Errorf("relay answered OPEN with %s", f.Type)
+		return nil, "", fmt.Errorf("relay answered OPEN with %s", f.Type)
 	}
 }
 

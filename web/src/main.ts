@@ -118,6 +118,7 @@ function showSession(locator: SessionLocator): void {
 
   const statusDot = el('status-dot');
   const statusText = el('status-text');
+  const accessLabel = el('access-label');
   const overlay = el('overlay');
   const overlayTitle = el('overlay-title');
   const overlayBody = el('overlay-body');
@@ -168,6 +169,14 @@ function showSession(locator: SessionLocator): void {
           refit();
         },
         onStatus: setStatus,
+        onAccess: (readOnly) => {
+          // Stop xterm from echoing keystrokes locally. Without this a viewer
+          // would see their own typing appear and believe it had been sent.
+          term.options.disableStdin = readOnly;
+          term.options.cursorBlink = !readOnly;
+          accessLabel.textContent = readOnly ? 'read-only' : '';
+          accessLabel.hidden = !readOnly;
+        },
       },
     });
     tunnel.connect();

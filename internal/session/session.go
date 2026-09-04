@@ -37,6 +37,12 @@ type Session struct {
 	HostToken string
 	// GuestToken authenticates a guest joining the session.
 	GuestToken string
+	// ViewerToken authenticates a read-only guest.
+	//
+	// A third credential rather than a flag on the second: capability belongs
+	// in the token, so a viewer link can be handed out freely without any
+	// client being trusted to ask for less than it could take.
+	ViewerToken string
 
 	CreatedAt time.Time
 	ExpiresAt time.Time

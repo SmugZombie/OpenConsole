@@ -94,13 +94,31 @@ func (r *relay) attachHost(s *session.Session, cols, rows uint16) tunnel.Conn {
 // attachGuest dials as a guest and asserts the relay accepted it.
 func (r *relay) attachGuest(s *session.Session) tunnel.Conn {
 	r.t.Helper()
-	conn, f := r.dial(protocol.Open{
-		SessionID: s.SessionID, Role: protocol.RoleGuest, Token: s.GuestToken,
-	})
-	if f.Type != protocol.TypeOpen {
-		r.t.Fatalf("guest OPEN answered with %s, want OPEN", f.Type)
-	}
+	conn, _ := r.attachAs(s, protocol.RoleGuest, s.GuestToken, protocol.RoleGuest)
 	return conn
+}
+
+// attachAs dials with a chosen role and token, and asserts the access the
+// relay granted.
+func (r *relay) attachAs(s *session.Session, role protocol.Role, token string, want protocol.Role) (tunnel.Conn, protocol.Open) {
+	r.t.Helper()
+	conn, f := r.dial(protocol.Open{SessionID: s.SessionID, Role: role, Token: token})
+	if f.Type != protocol.TypeOpen {
+		r.t.Fatalf("OPEN answered with %s, wanted OPEN", f.Type)
+	}
+	var ack protocol.Open
+	if err := protocol.DecodeControl(f, &ack); err != nil {
+		r.t.Fatalf("decode ack: %v", err)
+	}
+	// The acknowledgement reports what the relay granted, not what was asked
+	// for, so a client can tell whether it may type.
+	if ack.Role != want {
+		r.t.Fatalf("granted role = %q, want %q", ack.Role, want)
+	}
+	if ack.Token != "" {
+		r.t.Fatal("the acknowledgement leaked a credential")
+	}
+	return conn, ack
 }
 
 // recvType waits for the next frame of the given type, skipping others.
@@ -193,6 +211,83 @@ func TestTunnelGuestReceivesScrollbackOnJoin(t *testing.T) {
 	}
 }
 
+// A viewer ticket watches the terminal and cannot type into it.
+func TestTunnelViewerIsReadOnly(t *testing.T) {
+	r := newRelay(t)
+	s := r.newSession()
+	ctx := context.Background()
+
+	host := r.attachHost(s, 100, 40)
+
+	// Presented as an ordinary join, a viewer token is accepted read-only
+	// rather than refused: one link shape works for everyone.
+	viewer, _ := r.attachAs(s, protocol.RoleGuest, s.ViewerToken, protocol.RoleViewer)
+
+	waitUntil(t, func() bool {
+		b, ok := r.bridges.Get(s.SessionID)
+		return ok && b.Guests() == 1
+	})
+
+	// Watching works.
+	if err := host.Send(ctx, protocol.NewData([]byte("host output\r\n"))); err != nil {
+		t.Fatalf("host send: %v", err)
+	}
+	if got := recvType(t, viewer, protocol.TypeData); string(got.Payload) != "host output\r\n" {
+		t.Fatalf("viewer received %q", got.Payload)
+	}
+
+	// Typing does not reach the host.
+	if err := viewer.Send(ctx, protocol.NewData([]byte("rm -rf /\r"))); err != nil {
+		t.Fatalf("viewer send: %v", err)
+	}
+	assertNothing(t, host, 400*time.Millisecond)
+}
+
+// A full ticket can ask for less, which is the point of the -read-only flag.
+func TestTunnelVoluntaryDowngradeToViewer(t *testing.T) {
+	r := newRelay(t)
+	s := r.newSession()
+	ctx := context.Background()
+
+	host := r.attachHost(s, 80, 24)
+	guest, _ := r.attachAs(s, protocol.RoleViewer, s.GuestToken, protocol.RoleViewer)
+
+	waitUntil(t, func() bool {
+		b, ok := r.bridges.Get(s.SessionID)
+		return ok && b.Guests() == 1
+	})
+
+	if err := guest.Send(ctx, protocol.NewData([]byte("should be ignored"))); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	assertNothing(t, host, 400*time.Millisecond)
+}
+
+// The viewer token must not open a host tunnel.
+func TestTunnelViewerCannotHost(t *testing.T) {
+	r := newRelay(t)
+	s := r.newSession()
+
+	_, f := r.dial(protocol.Open{SessionID: s.SessionID, Role: protocol.RoleHost, Token: s.ViewerToken})
+	if f.Type != protocol.TypeError {
+		t.Fatalf("answered with %s, want ERROR", f.Type)
+	}
+}
+
+// assertNothing fails if any frame arrives within d.
+func assertNothing(t *testing.T, c tunnel.Conn, d time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	f, err := c.Recv(ctx)
+	if err == nil {
+		t.Fatalf("unexpected %s frame: %q", f.Type, f.Payload)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Recv = %v, want a timeout", err)
+	}
+}
+
 func TestTunnelRejectsBadCredentials(t *testing.T) {
 	r := newRelay(t)
 	s := r.newSession()
@@ -210,6 +305,8 @@ func TestTunnelRejectsBadCredentials(t *testing.T) {
 		{"unknown session", protocol.Open{SessionID: "aaaaaaaaaaaaaaaaaaaaaaaaaa", Role: protocol.RoleHost, Token: s.HostToken}},
 		{"malformed session", protocol.Open{SessionID: "../../etc", Role: protocol.RoleHost, Token: s.HostToken}},
 		{"unknown role", protocol.Open{SessionID: s.SessionID, Role: protocol.Role("admin"), Token: s.HostToken}},
+		{"viewer token as host", protocol.Open{SessionID: s.SessionID, Role: protocol.RoleHost, Token: s.ViewerToken}},
+		{"another session's viewer token", protocol.Open{SessionID: s.SessionID, Role: protocol.RoleGuest, Token: other.ViewerToken}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

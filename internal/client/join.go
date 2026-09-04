@@ -36,9 +36,16 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 	api := NewClient(cfg.Server)
 	cols, rows := terminalSize(stdout)
 
-	conn, err := openTunnel(ctx, api.TunnelURL(), protocol.Open{
+	// Ask for read-only when the user did; otherwise present the ticket and
+	// let the relay decide what it is worth.
+	role := protocol.RoleGuest
+	if cfg.ReadOnly {
+		role = protocol.RoleViewer
+	}
+
+	conn, granted, err := openTunnel(ctx, api.TunnelURL(), protocol.Open{
 		SessionID: sessionID,
-		Role:      protocol.RoleGuest,
+		Role:      role,
 		Token:     token,
 		Cols:      cols,
 		Rows:      rows,
@@ -48,7 +55,14 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 	}
 	defer conn.Close("guest left")
 
-	fmt.Fprintf(stderr, "openconsole: joined %s (press Ctrl-] to detach)\n", sessionID)
+	readOnly := granted == protocol.RoleViewer
+	if readOnly {
+		fmt.Fprintf(stderr,
+			"openconsole: joined %s read-only — you can watch, typing is ignored (Ctrl-] to detach)\n",
+			sessionID)
+	} else {
+		fmt.Fprintf(stderr, "openconsole: joined %s (press Ctrl-] to detach)\n", sessionID)
+	}
 
 	restore, err := rawTerminal(stdin)
 	if err != nil {
@@ -56,7 +70,7 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 	}
 	defer restore()
 
-	err = runJoin(ctx, conn, stdin, stdout)
+	err = runJoin(ctx, conn, stdin, stdout, readOnly)
 
 	restore()
 	switch {
@@ -75,7 +89,7 @@ func Join(ctx context.Context, cfg Config, ticket string, stdin, stdout *os.File
 var errDetached = errors.New("detached")
 
 // runJoin pumps keystrokes to the relay and remote output to the screen.
-func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File) error {
+func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File, readOnly bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -90,15 +104,21 @@ func runJoin(ctx context.Context, conn tunnel.Conn, stdin, stdout *os.File) erro
 			if n > 0 {
 				if i := indexByte(buf[:n], detachKey); i >= 0 {
 					// Send anything typed before the escape, then stop.
-					if i > 0 {
+					if i > 0 && !readOnly {
 						_ = conn.Send(ctx, protocol.NewData(buf[:i]))
 					}
 					input <- errDetached
 					return
 				}
-				if err := conn.Send(ctx, protocol.NewData(buf[:n])); err != nil {
-					input <- err
-					return
+				// A read-only guest still reads the keyboard, because
+				// Ctrl-] has to keep working, but nothing else is sent. The
+				// relay would drop it anyway; not sending saves a round trip
+				// and makes the intent obvious here.
+				if !readOnly {
+					if err := conn.Send(ctx, protocol.NewData(buf[:n])); err != nil {
+						input <- err
+						return
+					}
 				}
 			}
 			if err != nil {

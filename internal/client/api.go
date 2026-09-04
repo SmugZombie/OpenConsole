@@ -17,12 +17,13 @@ const maxAPIResponse = 64 << 10
 
 // Session is what the relay returns when a session is created.
 type Session struct {
-	SessionID  string    `json:"session_id"`
-	HostToken  string    `json:"host_token"`
-	GuestToken string    `json:"guest_token"`
-	CreatedAt  time.Time `json:"created_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	ExpiresIn  int       `json:"expires_in_seconds"`
+	SessionID   string    `json:"session_id"`
+	HostToken   string    `json:"host_token"`
+	GuestToken  string    `json:"guest_token"`
+	ViewerToken string    `json:"viewer_token"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	ExpiresIn   int       `json:"expires_in_seconds"`
 	// SSHPort is set when the relay accepts SSH joins.
 	SSHPort int `json:"ssh_port,omitempty"`
 }

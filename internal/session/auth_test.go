@@ -10,7 +10,7 @@ import (
 	"github.com/SmugZombie/OpenConsole/internal/protocol"
 )
 
-func TestAuthenticate(t *testing.T) {
+func TestAuthenticateGrantsByToken(t *testing.T) {
 	m := NewManager(Options{TTL: time.Minute})
 	defer m.Close()
 
@@ -19,35 +19,80 @@ func TestAuthenticate(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	t.Run("host token", func(t *testing.T) {
-		got, err := m.Authenticate(context.Background(), s.SessionID, protocol.RoleHost, s.HostToken)
-		if err != nil {
-			t.Fatalf("Authenticate: %v", err)
-		}
-		if got.SessionID != s.SessionID {
-			t.Fatalf("got session %q", got.SessionID)
-		}
-	})
+	tests := []struct {
+		name  string
+		role  protocol.Role
+		token string
+		want  Access
+	}{
+		{"host token as host", protocol.RoleHost, s.HostToken, AccessHost},
+		{"guest token as guest", protocol.RoleGuest, s.GuestToken, AccessGuest},
+		// A viewer link presented as an ordinary join is accepted read-only
+		// rather than refused, so one link shape works for everyone.
+		{"viewer token as guest", protocol.RoleGuest, s.ViewerToken, AccessViewer},
+		// A voluntary downgrade by someone holding a full ticket.
+		{"guest token asking to view", protocol.RoleViewer, s.GuestToken, AccessViewer},
+		{"viewer token asking to view", protocol.RoleViewer, s.ViewerToken, AccessViewer},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, access, err := m.Authenticate(context.Background(), s.SessionID, tc.role, tc.token)
+			if err != nil {
+				t.Fatalf("Authenticate: %v", err)
+			}
+			if got.SessionID != s.SessionID {
+				t.Fatalf("got session %q", got.SessionID)
+			}
+			if access != tc.want {
+				t.Fatalf("access = %q, want %q", access, tc.want)
+			}
+		})
+	}
+}
 
-	t.Run("guest token", func(t *testing.T) {
-		if _, err := m.Authenticate(context.Background(), s.SessionID, protocol.RoleGuest, s.GuestToken); err != nil {
-			t.Fatalf("Authenticate: %v", err)
-		}
-	})
+// The whole point of a separate viewer token: it must never confer a keyboard.
+func TestAuthenticateViewerCannotWriteOrHost(t *testing.T) {
+	m := NewManager(Options{TTL: time.Minute})
+	defer m.Close()
 
-	// The tokens are not interchangeable: a guest ticket must not confer host
-	// rights, which is the whole reason there are two.
-	t.Run("guest token cannot open a host tunnel", func(t *testing.T) {
-		if _, err := m.Authenticate(context.Background(), s.SessionID, protocol.RoleHost, s.GuestToken); !errors.Is(err, ErrUnauthorized) {
-			t.Fatalf("got %v, want ErrUnauthorized", err)
-		}
-	})
+	s, err := m.Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	t.Run("host token cannot open a guest tunnel", func(t *testing.T) {
-		if _, err := m.Authenticate(context.Background(), s.SessionID, protocol.RoleGuest, s.HostToken); !errors.Is(err, ErrUnauthorized) {
-			t.Fatalf("got %v, want ErrUnauthorized", err)
-		}
-	})
+	_, access, err := m.Authenticate(context.Background(), s.SessionID, protocol.RoleGuest, s.ViewerToken)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if access.CanWrite() {
+		t.Fatal("the viewer token granted write access")
+	}
+	if access.Role() != protocol.RoleViewer {
+		t.Fatalf("role = %q, want viewer", access.Role())
+	}
+
+	// And it is not a host credential either.
+	if _, _, err := m.Authenticate(context.Background(), s.SessionID, protocol.RoleHost, s.ViewerToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("viewer token as host = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestAuthenticateTokensAreNotInterchangeable(t *testing.T) {
+	m := NewManager(Options{TTL: time.Minute})
+	defer m.Close()
+
+	s, err := m.Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := m.Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s.GuestToken == s.ViewerToken || s.HostToken == s.ViewerToken {
+		t.Fatal("session tokens must all differ")
+	}
 
 	bad := []struct {
 		name  string
@@ -55,19 +100,27 @@ func TestAuthenticate(t *testing.T) {
 		role  protocol.Role
 		token string
 	}{
-		{"wrong token", s.SessionID, protocol.RoleHost, strings.Repeat("a", len(s.HostToken))},
-		{"empty token", s.SessionID, protocol.RoleHost, ""},
-		{"truncated token", s.SessionID, protocol.RoleHost, s.HostToken[:len(s.HostToken)-1]},
-		{"token with suffix", s.SessionID, protocol.RoleHost, s.HostToken + "a"},
-		{"unknown session", mustID(t), protocol.RoleHost, s.HostToken},
-		{"malformed session", "../etc/passwd", protocol.RoleHost, s.HostToken},
-		{"unknown role", s.SessionID, protocol.Role("admin"), s.HostToken},
+		{"guest token as host", s.SessionID, protocol.RoleHost, s.GuestToken},
+		{"host token as guest", s.SessionID, protocol.RoleGuest, s.HostToken},
+		{"host token as viewer", s.SessionID, protocol.RoleViewer, s.HostToken},
+		{"another session's guest token", s.SessionID, protocol.RoleGuest, other.GuestToken},
+		{"another session's viewer token", s.SessionID, protocol.RoleViewer, other.ViewerToken},
+		{"wrong token", s.SessionID, protocol.RoleGuest, strings.Repeat("a", len(s.GuestToken))},
+		{"empty token", s.SessionID, protocol.RoleGuest, ""},
+		{"truncated token", s.SessionID, protocol.RoleGuest, s.GuestToken[:len(s.GuestToken)-1]},
+		{"token with suffix", s.SessionID, protocol.RoleGuest, s.GuestToken + "a"},
+		{"unknown session", mustID(t), protocol.RoleGuest, s.GuestToken},
+		{"malformed session", "../etc/passwd", protocol.RoleGuest, s.GuestToken},
+		{"unknown role", s.SessionID, protocol.Role("admin"), s.GuestToken},
 	}
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := m.Authenticate(context.Background(), tc.id, tc.role, tc.token)
+			got, access, err := m.Authenticate(context.Background(), tc.id, tc.role, tc.token)
 			if got != nil {
 				t.Fatal("Authenticate returned a session")
+			}
+			if access != "" {
+				t.Fatalf("access = %q, want none", access)
 			}
 			// Every failure is the same error, so the caller cannot tell a
 			// wrong token from a session that does not exist.
@@ -89,8 +142,17 @@ func TestAuthenticateExpiredSession(t *testing.T) {
 	}
 	clock.Advance(2 * time.Minute)
 
-	if _, err := m.Authenticate(context.Background(), s.SessionID, protocol.RoleHost, s.HostToken); !errors.Is(err, ErrUnauthorized) {
+	if _, _, err := m.Authenticate(context.Background(), s.SessionID, protocol.RoleHost, s.HostToken); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("expired session got %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestAccessCanWrite(t *testing.T) {
+	if !AccessHost.CanWrite() || !AccessGuest.CanWrite() {
+		t.Fatal("host and guest must be able to write")
+	}
+	if AccessViewer.CanWrite() {
+		t.Fatal("a viewer must not be able to write")
 	}
 }
 

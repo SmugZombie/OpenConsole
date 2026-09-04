@@ -81,7 +81,7 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 	}
 	defer term.Close()
 
-	conn, err := openTunnel(ctx, api.TunnelURL(), protocol.Open{
+	conn, _, err := openTunnel(ctx, api.TunnelURL(), protocol.Open{
 		SessionID: sess.SessionID,
 		Role:      protocol.RoleHost,
 		Token:     sess.HostToken,
@@ -95,6 +95,7 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 
 	printBanner(stderr, cfg, sess,
 		api.JoinURL(sess.SessionID, sess.GuestToken),
+		api.JoinURL(sess.SessionID, sess.ViewerToken),
 		api.SSHCommand(sess.SessionID, sess.SSHPort))
 
 	restore, err := rawTerminal(stdin)

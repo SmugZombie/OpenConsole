@@ -36,7 +36,7 @@ func (a *API) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	defer conn.Close("done")
 
-	open, sess, err := a.authenticate(ctx, conn)
+	open, sess, access, err := a.authenticate(ctx, conn)
 	if err != nil {
 		a.log.Info("tunnel handshake rejected",
 			slog.String("remote", remoteHost(r.RemoteAddr)),
@@ -44,12 +44,11 @@ func (a *API) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch open.Role {
-	case protocol.RoleHost:
+	if access == session.AccessHost {
 		a.serveHostTunnel(ctx, conn, sess, open)
-	case protocol.RoleGuest:
-		a.serveGuestTunnel(ctx, conn, sess)
+		return
 	}
+	a.serveGuestTunnel(ctx, conn, sess, access)
 }
 
 // authenticate reads and validates the opening frame.
@@ -58,50 +57,55 @@ func (a *API) handleTunnel(w http.ResponseWriter, r *http.Request) {
 // bridge, and that can fail. The OPEN ack is sent by the role handlers once the
 // connection is genuinely attached, so a client that receives it knows it is
 // live rather than merely authenticated.
-func (a *API) authenticate(ctx context.Context, conn tunnel.Conn) (protocol.Open, *session.Session, error) {
+func (a *API) authenticate(ctx context.Context, conn tunnel.Conn) (protocol.Open, *session.Session, session.Access, error) {
 	hsCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
 	f, err := conn.Recv(hsCtx)
 	if err != nil {
-		return protocol.Open{}, nil, err
+		return protocol.Open{}, nil, "", err
 	}
 	if f.Type != protocol.TypeOpen {
 		tunnel.SendError(hsCtx, conn, protocol.ErrCodeProtocol, "expected OPEN as the first frame")
-		return protocol.Open{}, nil, errors.New("first frame was " + f.Type.String())
+		return protocol.Open{}, nil, "", errors.New("first frame was " + f.Type.String())
 	}
 
 	var open protocol.Open
 	if err := protocol.DecodeControl(f, &open); err != nil {
 		tunnel.SendError(hsCtx, conn, protocol.ErrCodeProtocol, "malformed OPEN")
-		return protocol.Open{}, nil, err
+		return protocol.Open{}, nil, "", err
 	}
 	if open.Version != protocol.Version {
 		tunnel.SendError(hsCtx, conn, protocol.ErrCodeVersionUnsupport, "unsupported protocol version")
-		return protocol.Open{}, nil, errors.New("unsupported protocol version")
+		return protocol.Open{}, nil, "", errors.New("unsupported protocol version")
 	}
-	if open.Role != protocol.RoleHost && open.Role != protocol.RoleGuest {
+	switch open.Role {
+	case protocol.RoleHost, protocol.RoleGuest, protocol.RoleViewer:
+	default:
 		tunnel.SendError(hsCtx, conn, protocol.ErrCodeProtocol, "unknown role")
-		return protocol.Open{}, nil, errors.New("unknown role")
+		return protocol.Open{}, nil, "", errors.New("unknown role")
 	}
 
-	sess, err := a.sessions.Authenticate(hsCtx, open.SessionID, open.Role, open.Token)
+	sess, access, err := a.sessions.Authenticate(hsCtx, open.SessionID, open.Role, open.Token)
 	if err != nil {
 		// A bad token and an unknown session are reported identically, so a
 		// caller cannot use this to discover which session IDs exist.
 		tunnel.SendError(hsCtx, conn, protocol.ErrCodeUnauthorized, "invalid session or token")
-		return protocol.Open{}, nil, err
+		return protocol.Open{}, nil, "", err
 	}
 
-	return open, sess, nil
+	return open, sess, access, nil
 }
 
 // ack confirms attachment. The echoed OPEN carries no credential.
-func ack(ctx context.Context, conn tunnel.Conn, sess *session.Session, role protocol.Role) error {
+//
+// Its Role is the access the relay actually granted, not what the client asked
+// for, so a client learns from this whether it may type.
+func ack(ctx context.Context, conn tunnel.Conn, sess *session.Session, access session.Access) error {
 	return tunnel.SendControl(ctx, conn, protocol.TypeOpen, protocol.Open{
 		Version:   protocol.Version,
 		SessionID: sess.SessionID,
-		Role:      role,
+		Role:      access.Role(),
 	})
 }
 
@@ -121,7 +125,7 @@ func (a *API) serveHostTunnel(ctx context.Context, conn tunnel.Conn, sess *sessi
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if err := ack(ctx, conn, sess, protocol.RoleHost); err != nil {
+	if err := ack(ctx, conn, sess, session.AccessHost); err != nil {
 		bridge.Close("host handshake failed")
 		return
 	}
@@ -136,7 +140,7 @@ func (a *API) serveHostTunnel(ctx context.Context, conn tunnel.Conn, sess *sessi
 }
 
 // serveGuestTunnel attaches a guest to a session's live terminal.
-func (a *API) serveGuestTunnel(ctx context.Context, conn tunnel.Conn, sess *session.Session) {
+func (a *API) serveGuestTunnel(ctx context.Context, conn tunnel.Conn, sess *session.Session, access session.Access) {
 	bridge, ok := a.bridges.Get(sess.SessionID)
 	if !ok {
 		tunnel.SendError(ctx, conn, protocol.ErrCodeSessionNotFound, "the host is not connected")
@@ -146,12 +150,12 @@ func (a *API) serveGuestTunnel(ctx context.Context, conn tunnel.Conn, sess *sess
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if err := ack(ctx, conn, sess, protocol.RoleGuest); err != nil {
+	if err := ack(ctx, conn, sess, access); err != nil {
 		return
 	}
 	go a.keepalive(ctx, conn)
 
-	err := bridge.ServeGuest(ctx, conn)
+	err := bridge.ServeGuest(ctx, conn, session.GuestOptions{Access: access})
 	if errors.Is(err, session.ErrNoHost) {
 		tunnel.SendError(ctx, conn, protocol.ErrCodeSessionNotFound, "the host is not connected")
 		return

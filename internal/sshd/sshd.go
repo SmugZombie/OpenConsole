@@ -44,7 +44,7 @@ const authPrompt = "Session token: "
 
 // Sessions is the part of session.Manager this package needs.
 type Sessions interface {
-	Authenticate(ctx context.Context, id string, role protocol.Role, token string) (*session.Session, error)
+	Authenticate(ctx context.Context, id string, role protocol.Role, token string) (*session.Session, session.Access, error)
 }
 
 // Bridges resolves the live bridge for a session.
@@ -193,9 +193,12 @@ func (s *Server) Close() error {
 
 /* --- authentication ------------------------------------------------------ */
 
-// sessionIDKey is where the authenticated session lands in the connection's
-// permissions, so the channel handler does not have to authenticate again.
-const sessionIDKey = "openconsole-session-id"
+// Where the authentication result lands in the connection's permissions, so
+// the channel handler does not have to authenticate again.
+const (
+	sessionIDKey = "openconsole-session-id"
+	accessKey    = "openconsole-access"
+)
 
 func (s *Server) authKeyboardInteractive(c ssh.ConnMetadata, client ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 	answers, err := client("", "", []string{authPrompt}, []bool{false}) // echo off
@@ -224,13 +227,16 @@ func (s *Server) authenticate(c ssh.ConnMetadata, token string) (*ssh.Permission
 	// read naturally.
 	id := c.User()
 
-	sess, err := s.opts.Sessions.Authenticate(
+	sess, access, err := s.opts.Sessions.Authenticate(
 		context.Background(), id, protocol.RoleGuest, token)
 	if err != nil {
 		return nil, errUnauthorized
 	}
 	return &ssh.Permissions{
-		Extensions: map[string]string{sessionIDKey: sess.SessionID},
+		Extensions: map[string]string{
+			sessionIDKey: sess.SessionID,
+			accessKey:    string(access),
+		},
 	}, nil
 }
 
@@ -277,9 +283,10 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 
 	// Every authentication path sets this. A connection without it got here
 	// some way this code does not know about, so refuse rather than guess.
-	sessionID := ""
+	sessionID, access := "", session.Access("")
 	if conn.Permissions != nil {
 		sessionID = conn.Permissions.Extensions[sessionIDKey]
+		access = session.Access(conn.Permissions.Extensions[accessKey])
 	}
 	if sessionID == "" {
 		s.log.Error("authenticated ssh connection carries no session",
@@ -316,14 +323,14 @@ func (s *Server) handleConn(ctx context.Context, nConn net.Conn) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.handleSession(ctx, sessionID, ch, chReqs)
+			s.handleSession(ctx, sessionID, access, ch, chReqs)
 		}()
 	}
 	wg.Wait()
 }
 
 // handleSession serves one SSH session channel.
-func (s *Server) handleSession(ctx context.Context, sessionID string, ch ssh.Channel, reqs <-chan *ssh.Request) {
+func (s *Server) handleSession(ctx context.Context, sessionID string, access session.Access, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	defer ch.Close()
 
 	// Wait for the client to ask for a shell before attaching. Attaching
@@ -357,10 +364,16 @@ func (s *Server) handleSession(ctx context.Context, sessionID string, ch ssh.Cha
 		return
 	}
 
-	fmt.Fprint(ch, "openconsole: attached. The host ends the session.\r\n")
+	if access.CanWrite() {
+		fmt.Fprint(ch, "openconsole: attached. The host ends the session.\r\n")
+	} else {
+		// Say so up front, or someone types for a while and wonders why the
+		// terminal is ignoring them.
+		fmt.Fprint(ch, "openconsole: attached read-only. You can watch; typing is ignored.\r\n")
+	}
 
 	stream := newChannelStream(ch)
-	err := bridge.ServeGuest(ctx, stream)
+	err := bridge.ServeGuest(ctx, stream, session.GuestOptions{Access: access})
 	switch {
 	case err == nil,
 		errors.Is(err, io.EOF),

@@ -122,8 +122,8 @@ func TestBridgeHostOutputReachesGuests(t *testing.T) {
 
 	g1, g2 := newFakeStream(), newFakeStream()
 	ctx := context.Background()
-	go func() { _ = b.ServeGuest(ctx, g1) }()
-	go func() { _ = b.ServeGuest(ctx, g2) }()
+	go func() { _ = b.ServeGuest(ctx, g1, GuestOptions{}) }()
+	go func() { _ = b.ServeGuest(ctx, g2, GuestOptions{}) }()
 
 	waitGuests(t, b, 2)
 
@@ -141,7 +141,7 @@ func TestBridgeGuestInputReachesHost(t *testing.T) {
 	b, host, _ := startBridge(t)
 
 	g := newFakeStream()
-	go func() { _ = b.ServeGuest(context.Background(), g) }()
+	go func() { _ = b.ServeGuest(context.Background(), g, GuestOptions{}) }()
 	waitGuests(t, b, 1)
 
 	g.in <- protocol.NewData([]byte("ls -la\n"))
@@ -149,6 +149,68 @@ func TestBridgeGuestInputReachesHost(t *testing.T) {
 	f := host.next(t, protocol.TypeData)
 	if string(f.Payload) != "ls -la\n" {
 		t.Fatalf("host got %q", f.Payload)
+	}
+}
+
+// A read-only guest must be able to watch and never to type.
+func TestBridgeViewerCannotWrite(t *testing.T) {
+	b, host, _ := startBridge(t)
+
+	viewer := newFakeStream()
+	go func() { _ = b.ServeGuest(context.Background(), viewer, GuestOptions{Access: AccessViewer}) }()
+	waitGuests(t, b, 1)
+	viewer.next(t, protocol.TypeResize) // the join-time size
+
+	// Watching works.
+	host.in <- protocol.NewData([]byte("host output"))
+	if f := viewer.next(t, protocol.TypeData); string(f.Payload) != "host output" {
+		t.Fatalf("viewer received %q", f.Payload)
+	}
+
+	// Typing does not.
+	viewer.in <- protocol.NewData([]byte("rm -rf /\r"))
+	host.expectNothing(t, 300*time.Millisecond)
+}
+
+// Enforcement is per guest, not global: a viewer must not silence anyone else.
+func TestBridgeViewerAndGuestCoexist(t *testing.T) {
+	b, host, _ := startBridge(t)
+
+	viewer, guest := newFakeStream(), newFakeStream()
+	go func() { _ = b.ServeGuest(context.Background(), viewer, GuestOptions{Access: AccessViewer}) }()
+	go func() { _ = b.ServeGuest(context.Background(), guest, GuestOptions{Access: AccessGuest}) }()
+	waitGuests(t, b, 2)
+
+	viewer.in <- protocol.NewData([]byte("ignored"))
+	guest.in <- protocol.NewData([]byte("allowed"))
+
+	// Only the writable guest's input arrives, and it is not the viewer's.
+	f := host.next(t, protocol.TypeData)
+	if string(f.Payload) != "allowed" {
+		t.Fatalf("host received %q, want %q", f.Payload, "allowed")
+	}
+	host.expectNothing(t, 300*time.Millisecond)
+
+	// Both still see output.
+	host.in <- protocol.NewData([]byte("broadcast"))
+	for i, g := range []*fakeStream{viewer, guest} {
+		if f := g.next(t, protocol.TypeData); string(f.Payload) != "broadcast" {
+			t.Fatalf("guest %d received %q", i, f.Payload)
+		}
+	}
+}
+
+// An unset Access must not accidentally mean "no access" or "silent guest".
+func TestBridgeDefaultAccessCanWrite(t *testing.T) {
+	b, host, _ := startBridge(t)
+
+	g := newFakeStream()
+	go func() { _ = b.ServeGuest(context.Background(), g, GuestOptions{}) }()
+	waitGuests(t, b, 1)
+
+	g.in <- protocol.NewData([]byte("typed"))
+	if f := host.next(t, protocol.TypeData); string(f.Payload) != "typed" {
+		t.Fatalf("host received %q", f.Payload)
 	}
 }
 
@@ -160,7 +222,7 @@ func TestBridgeGuestGetsSizeAndScrollbackOnJoin(t *testing.T) {
 	waitFor(t, func() bool { return b.scrollLen() > 0 })
 
 	g := newFakeStream()
-	go func() { _ = b.ServeGuest(context.Background(), g) }()
+	go func() { _ = b.ServeGuest(context.Background(), g, GuestOptions{}) }()
 
 	// The size comes first so a client can shape its terminal before drawing.
 	r := g.next(t, protocol.TypeResize)
@@ -182,7 +244,7 @@ func TestBridgeResizeFromHostIsBroadcast(t *testing.T) {
 	b, host, _ := startBridge(t)
 
 	g := newFakeStream()
-	go func() { _ = b.ServeGuest(context.Background(), g) }()
+	go func() { _ = b.ServeGuest(context.Background(), g, GuestOptions{}) }()
 	waitGuests(t, b, 1)
 	g.next(t, protocol.TypeResize) // the join-time size
 
@@ -210,7 +272,7 @@ func TestBridgeIgnoresResizeFromGuest(t *testing.T) {
 	b, host, _ := startBridge(t)
 
 	g := newFakeStream()
-	go func() { _ = b.ServeGuest(context.Background(), g) }()
+	go func() { _ = b.ServeGuest(context.Background(), g, GuestOptions{}) }()
 	waitGuests(t, b, 1)
 
 	f, err := protocol.NewControl(protocol.TypeResize, protocol.Resize{Cols: 1, Rows: 1})
@@ -236,7 +298,7 @@ func TestBridgeRefusesSecondHost(t *testing.T) {
 
 func TestBridgeRefusesGuestWithoutHost(t *testing.T) {
 	b := newBridge("s", discardLogger())
-	if err := b.ServeGuest(context.Background(), newFakeStream()); !errors.Is(err, ErrNoHost) {
+	if err := b.ServeGuest(context.Background(), newFakeStream(), GuestOptions{}); !errors.Is(err, ErrNoHost) {
 		t.Fatalf("guest without host got %v, want ErrNoHost", err)
 	}
 }
@@ -246,7 +308,7 @@ func TestBridgeHostDisconnectEndsSession(t *testing.T) {
 
 	g := newFakeStream()
 	guestDone := make(chan error, 1)
-	go func() { guestDone <- b.ServeGuest(context.Background(), g) }()
+	go func() { guestDone <- b.ServeGuest(context.Background(), g, GuestOptions{}) }()
 	waitGuests(t, b, 1)
 
 	host.Close("host gone")
@@ -265,7 +327,7 @@ func TestBridgeHostCloseFrameIsForwarded(t *testing.T) {
 	b, host, _ := startBridge(t)
 
 	g := newFakeStream()
-	go func() { _ = b.ServeGuest(context.Background(), g) }()
+	go func() { _ = b.ServeGuest(context.Background(), g, GuestOptions{}) }()
 	waitGuests(t, b, 1)
 
 	code := 0
@@ -303,7 +365,7 @@ func TestBridgeDropsSlowGuest(t *testing.T) {
 	slow := newFakeStream()
 	slow.out = make(chan protocol.Frame) // unbuffered and never read
 	done := make(chan error, 1)
-	go func() { done <- b.ServeGuest(context.Background(), slow) }()
+	go func() { done <- b.ServeGuest(context.Background(), slow, GuestOptions{}) }()
 	waitGuests(t, b, 1)
 
 	// Overflow the guest's queue by a wide margin.

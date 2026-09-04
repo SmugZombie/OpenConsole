@@ -29,6 +29,10 @@ type Config struct {
 	// This is a local flag on purpose. The shell is chosen by the person at
 	// the keyboard; taking it from the relay would be remote code execution.
 	Shell string
+	// ReadOnly asks to join without the ability to type, even when the ticket
+	// would allow it. Useful for looking over someone's shoulder without the
+	// risk of a stray keystroke.
+	ReadOnly bool
 	// ShowVersion requests version output instead of starting a session.
 	ShowVersion bool
 }
@@ -46,6 +50,7 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	fs.SetOutput(output)
 	fs.StringVar(&cfg.Server, "server", cfg.Server, "relay base URL (env "+EnvServer+")")
 	fs.StringVar(&cfg.Shell, "shell", cfg.Shell, "shell to run (default $SHELL)")
+	fs.BoolVar(&cfg.ReadOnly, "read-only", false, "join without typing (join only)")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintf(output, "openconsole - share a terminal through an OpenConsole relay\n\n")

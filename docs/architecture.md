@@ -99,9 +99,18 @@ boundary:
 
 | Field | Secret? | Purpose |
 | --- | --- | --- |
-| `SessionID` | No | Public handle. Appears in URLs, logs and eventually as an SSH username. 128 bits from `crypto/rand`. |
+| `SessionID` | No | Public handle. Appears in URLs, logs and as an SSH username. 128 bits from `crypto/rand`. |
 | `HostToken` | **Yes** | Authenticates the host's tunnel connection. 256 bits. |
-| `GuestToken` | **Yes** | Authenticates a guest joining. 256 bits. |
+| `GuestToken` | **Yes** | Authenticates a guest who may watch and type. 256 bits. |
+| `ViewerToken` | **Yes** | Authenticates a guest who may only watch. 256 bits. |
+
+Capability lives in the credential, not in a flag a client sends. The relay
+compares a presented token against all three in constant time and answers with
+what it is worth; nothing the client claims can widen that. A viewer link is
+therefore safe to hand out, and it has the same shape as a full one, so the
+holder simply gets told read-only in the OPEN acknowledgement. A client may ask
+for *less* than it holds — that is what `openconsole join -read-only` does — but
+never for more.
 
 Both tokens are returned exactly once, in the `POST /api/v1/sessions` response.
 No other endpoint returns them and nothing logs them. Keeping the public ID
@@ -329,7 +338,7 @@ fails to connect.
 | 2 | PTY + shell, WebSocket tunnel, host↔guest streaming, terminal guest client, container image. | ✅ |
 | 3 | Browser client: Vite + TypeScript + xterm.js, embedded in the relay. | ✅ |
 | 4 | Native SSH access (`ssh <session>@relay`). | ✅ |
-| 5 | Multiplexed channels for TCP forwarding; read-only guests. | next |
+| 5 | Read-only guests ✅; multiplexed channels for TCP forwarding. | in progress |
 | 6 | End-to-end encryption between host and guest. | |
 
 ## Known gaps
@@ -346,8 +355,8 @@ fails to connect.
 4. **The relay sees plaintext terminal traffic.** Anyone who controls the relay
    can read and inject keystrokes. End-to-end encryption is roadmap, and until
    it exists "self-hosted" is doing real security work.
-5. **Guests have full write access.** Anyone with a ticket can type. Read-only
-   guests are roadmap.
+5. **A link cannot be revoked** short of ending the session, and there is no
+   per-guest identity or audit trail.
 6. **Single-process only.** Sessions and bridges live in one process's memory,
    so the relay cannot be horizontally scaled without sticky routing.
 7. **No Windows host support.** Sharing needs a PTY; ConPTY is not wired up. The

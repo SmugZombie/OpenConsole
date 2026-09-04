@@ -259,6 +259,51 @@ func TestSSHGuestGetsScrollbackOnJoin(t *testing.T) {
 	readUntil(t, stdout, "output before joining", 5*time.Second)
 }
 
+// A viewer ticket over SSH watches and cannot type.
+func TestSSHViewerIsReadOnly(t *testing.T) {
+	h := newHarness(t)
+
+	client, err := h.dial(h.sess.SessionID, h.sess.ViewerToken)
+	if err != nil {
+		t.Fatalf("dial with the viewer token: %v", err)
+	}
+	defer client.Close()
+
+	sess, stdin, stdout := h.join(client)
+	defer sess.Close()
+
+	// The banner has to say so, or someone types for a while and wonders why
+	// the terminal is ignoring them.
+	readUntil(t, stdout, "read-only", 5*time.Second)
+
+	// Watching works.
+	h.host.in <- protocol.NewData([]byte("host output\r\n"))
+	readUntil(t, stdout, "host output", 5*time.Second)
+
+	// Typing does not reach the host.
+	if _, err := stdin.Write([]byte("rm -rf /\r")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case f := <-h.host.out:
+		t.Fatalf("a read-only guest reached the host with a %s frame: %q", f.Type, f.Payload)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// The viewer token must not be usable as a host credential.
+func TestSSHViewerTokenIsNotAHostCredential(t *testing.T) {
+	h := newHarness(t)
+
+	// SSH only ever authenticates guests, so the viewer token authenticates —
+	// but read-only, which the bridge test above covers. What must not happen
+	// is the host token behaving like a guest one.
+	if client, err := h.dial(h.sess.SessionID, h.sess.HostToken); err == nil {
+		client.Close()
+		t.Fatal("the host token authenticated an SSH guest")
+	}
+}
+
 func TestSSHRejectsBadCredentials(t *testing.T) {
 	h := newHarness(t)
 
