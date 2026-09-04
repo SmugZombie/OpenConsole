@@ -23,6 +23,8 @@ type Session struct {
 	CreatedAt  time.Time `json:"created_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
 	ExpiresIn  int       `json:"expires_in_seconds"`
+	// SSHPort is set when the relay accepts SSH joins.
+	SSHPort int `json:"ssh_port,omitempty"`
 }
 
 // apiError is the relay's error body.
@@ -98,6 +100,26 @@ func relayError(status int, body []byte) error {
 
 // TunnelURL is the WebSocket endpoint for this relay.
 func (c *Client) TunnelURL() string { return c.baseURL + "/api/v1/tunnel" }
+
+// SSHCommand is the command a guest runs to join with a stock ssh client, or
+// "" when the relay does not accept SSH joins.
+//
+// The host is taken from the relay URL this client was pointed at. An operator
+// fronting SSH on a different name or port has to say so themselves — the relay
+// cannot know how it is reached from outside.
+func (c *Client) SSHCommand(sessionID string, sshPort int) string {
+	if sshPort == 0 {
+		return ""
+	}
+	u, err := url.Parse(c.baseURL)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	if sshPort == 22 {
+		return fmt.Sprintf("ssh %s@%s", sessionID, u.Hostname())
+	}
+	return fmt.Sprintf("ssh -p %d %s@%s", sshPort, sessionID, u.Hostname())
+}
 
 // JoinURL is the page a guest opens in a browser.
 //

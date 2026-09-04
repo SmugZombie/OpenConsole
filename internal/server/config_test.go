@@ -58,6 +58,42 @@ func TestLoadConfigFlagsBeatEnv(t *testing.T) {
 	}
 }
 
+func TestLoadConfigSSHIsOffByDefault(t *testing.T) {
+	// An upgrade must never start listening on a new port unasked.
+	cfg, err := LoadConfig(nil, env(nil), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SSHEnabled() {
+		t.Fatalf("SSH is enabled by default (addr %q)", cfg.SSHAddr)
+	}
+}
+
+func TestLoadConfigSSH(t *testing.T) {
+	cfg, err := LoadConfig(nil, env(map[string]string{
+		EnvSSHAddr:    ":2222",
+		EnvSSHHostKey: "/var/lib/openconsole/host_key",
+	}), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.SSHEnabled() || cfg.SSHAddr != ":2222" {
+		t.Fatalf("SSHAddr = %q", cfg.SSHAddr)
+	}
+	if cfg.SSHHostKey != "/var/lib/openconsole/host_key" {
+		t.Fatalf("SSHHostKey = %q", cfg.SSHHostKey)
+	}
+
+	cfg, err = LoadConfig([]string{"-ssh-listen", ":2200"},
+		env(map[string]string{EnvSSHAddr: ":2222"}), io.Discard)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.SSHAddr != ":2200" {
+		t.Fatalf("flag did not win: %q", cfg.SSHAddr)
+	}
+}
+
 func TestLoadConfigRejectsBadValues(t *testing.T) {
 	tests := []struct {
 		name string
@@ -69,6 +105,9 @@ func TestLoadConfigRejectsBadValues(t *testing.T) {
 		{"zero ttl", []string{"-session-ttl", "0s"}, nil},
 		{"unknown log level", []string{"-log-level", "loud"}, nil},
 		{"empty listen", []string{"-listen", ""}, nil},
+		// A host key with no listener is a configuration someone thinks is
+		// enabling SSH. Say so rather than silently ignoring it.
+		{"host key without ssh", []string{"-ssh-host-key", "/tmp/k"}, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

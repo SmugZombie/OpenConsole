@@ -11,7 +11,7 @@ import (
 //
 // It goes to stderr so that redirecting the shared shell's output does not
 // capture, and thereby log, the ticket.
-func printBanner(w io.Writer, cfg Config, sess *Session, joinURL string) {
+func printBanner(w io.Writer, cfg Config, sess *Session, joinURL, sshCmd string) {
 	ticket := Ticket(sess.SessionID, sess.GuestToken)
 
 	fmt.Fprintf(w, "\nopenconsole: sharing this terminal\n")
@@ -22,6 +22,12 @@ func printBanner(w io.Writer, cfg Config, sess *Session, joinURL string) {
 	fmt.Fprintf(w, "\n  in a terminal:\n    openconsole join %s\n", ticket)
 	if cfg.Server != DefaultServer {
 		fmt.Fprintf(w, "      (with -server %s, or OPENCONSOLE_SERVER)\n", cfg.Server)
+	}
+	if sshCmd != "" {
+		// The token is not on this command line on purpose: ssh prompts for
+		// it, so it stays out of the guest's shell history and out of `ps`.
+		fmt.Fprintf(w, "\n  with any ssh client:\n    %s\n", sshCmd)
+		fmt.Fprintf(w, "      (paste the part after the dot as the token)\n")
 	}
 	fmt.Fprintf(w, "\n  The ticket grants full control of this terminal. Send it privately,\n")
 	fmt.Fprintf(w, "  and type 'exit' here to end the session.\n\n")

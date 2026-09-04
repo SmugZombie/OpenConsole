@@ -39,6 +39,17 @@ type Config struct {
 	LogLevel        string
 	ShutdownTimeout time.Duration
 
+	// SSHAddr enables the SSH listener when set, e.g. ":2222".
+	//
+	// Empty means SSH is off. Opt-in rather than opt-out: an upgrade should
+	// never start listening on a new port without the operator asking, and
+	// SSH needs a host-key decision that only they can make.
+	SSHAddr string
+	// SSHHostKey is where the SSH host key is read from, and written to if it
+	// does not exist. Empty means generate an ephemeral key per start, which
+	// is fine for a trial and wrong for anything reached twice.
+	SSHHostKey string
+
 	// RunHealthCheck makes the process probe a running relay and exit,
 	// instead of serving. It backs the container HEALTHCHECK.
 	RunHealthCheck bool
@@ -59,6 +70,8 @@ const (
 	EnvListenAddr = "OPENCONSOLE_LISTEN_ADDR"
 	EnvSessionTTL = "OPENCONSOLE_SESSION_TTL"
 	EnvLogLevel   = "OPENCONSOLE_LOG_LEVEL"
+	EnvSSHAddr    = "OPENCONSOLE_SSH_ADDR"
+	EnvSSHHostKey = "OPENCONSOLE_SSH_HOST_KEY"
 )
 
 // LoadConfig resolves configuration from defaults, then environment variables,
@@ -82,12 +95,22 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	if v := getenv(EnvLogLevel); v != "" {
 		cfg.LogLevel = v
 	}
+	if v := getenv(EnvSSHAddr); v != "" {
+		cfg.SSHAddr = v
+	}
+	if v := getenv(EnvSSHHostKey); v != "" {
+		cfg.SSHHostKey = v
+	}
 
 	fs := flag.NewFlagSet("openconsole-server", flag.ContinueOnError)
 	fs.SetOutput(output)
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "address to listen on (env "+EnvListenAddr+")")
 	ttl := fs.String("session-ttl", cfg.SessionTTL.String(), "session lifetime, e.g. 30m (env "+EnvSessionTTL+")")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level: debug, info, warn, error (env "+EnvLogLevel+")")
+	fs.StringVar(&cfg.SSHAddr, "ssh-listen", cfg.SSHAddr,
+		"enable SSH joins on this address, e.g. :2222 (env "+EnvSSHAddr+"); empty disables SSH")
+	fs.StringVar(&cfg.SSHHostKey, "ssh-host-key", cfg.SSHHostKey,
+		"path to the SSH host key, created if absent (env "+EnvSSHHostKey+")")
 	fs.BoolVar(&cfg.RunHealthCheck, "healthcheck", false, "probe a running relay's /health and exit (for container HEALTHCHECK)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -115,8 +138,14 @@ func (c Config) Validate() error {
 	if _, err := ParseLogLevel(c.LogLevel); err != nil {
 		return err
 	}
+	if c.SSHAddr == "" && c.SSHHostKey != "" {
+		return fmt.Errorf("-ssh-host-key was given but SSH is disabled; set -ssh-listen too")
+	}
 	return nil
 }
+
+// SSHEnabled reports whether the SSH listener should run.
+func (c Config) SSHEnabled() bool { return c.SSHAddr != "" }
 
 // parseTTL accepts a Go duration ("30m", "1h30m"). A bare integer is rejected
 // rather than guessed at, so nobody has to wonder whether "30" means seconds.

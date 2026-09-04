@@ -35,6 +35,13 @@ COPY . .
 # Overwrite the committed bundle with the one just built.
 COPY --from=web /internal/webui/dist ./internal/webui/dist
 
+# An empty state directory, owned by the runtime uid. Docker initialises a
+# fresh named volume from the image's directory — contents and ownership — so
+# this is what lets the unprivileged relay write its SSH host key to a mounted
+# volume. A scratch image cannot mkdir at runtime, and a volume created without
+# it lands root-owned and unwritable.
+RUN mkdir -p /state && chown 65532:65532 /state
+
 ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH
@@ -55,13 +62,19 @@ FROM scratch
 # without rebuilding the base.
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /out/openconsole-server /openconsole-server
+COPY --from=build --chown=65532:65532 /state /var/lib/openconsole
 
 # Run unprivileged. scratch has no /etc/passwd, so the uid is given numerically;
 # 65532 is the conventional "nonroot" uid and needs no account to work.
 USER 65532:65532
 
-EXPOSE 8080
+# 8080 is the HTTP API and the browser client. 2222 is SSH joins, which are
+# opt-in: the port is only listened on when OPENCONSOLE_SSH_ADDR is set.
+EXPOSE 8080 2222
 
+# SSH is deliberately not enabled here. An image upgrade must never start
+# listening on a new port unasked, and SSH needs a host-key decision the
+# operator has to make — see deploy/docker-compose.yml for the opt-in.
 ENV OPENCONSOLE_LISTEN_ADDR=:8080 \
     OPENCONSOLE_SESSION_TTL=30m \
     OPENCONSOLE_LOG_LEVEL=info

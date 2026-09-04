@@ -25,6 +25,9 @@ openconsole: sharing this terminal
   in a terminal:
     openconsole join x5s5gzxptgfksy3hu75jmcoltm.3u2avt7nibb2oxbz…
 
+  with any ssh client:
+    ssh -p 2222 x5s5gzxptgfksy3hu75jmcoltm@console.example.com
+
   The ticket grants full control of this terminal. Send it privately,
   and type 'exit' here to end the session.
 
@@ -34,10 +37,11 @@ $ ▏
 Send the link, and they are in your terminal — no client to install, nothing to
 sign up for.
 
-> **Status: Phase 3.** Terminal sharing works end to end, from another terminal
-> or a browser. SSH access and TCP forwarding are not built yet. Session
-> creation is unauthenticated, so run your relay on a trusted network or behind
-> an authenticating proxy. See [the roadmap](docs/architecture.md#roadmap).
+> **Status: Phase 4.** Terminal sharing works end to end — from another
+> terminal, a browser, or a stock ssh client. TCP forwarding and end-to-end
+> encryption are not built yet. Session creation is unauthenticated, so run your
+> relay on a trusted network or behind an authenticating proxy. See
+> [the roadmap](docs/architecture.md#roadmap).
 
 ## How it works
 
@@ -45,9 +49,12 @@ sign up for.
   host machine                    relay server                    guests
  ┌──────────────┐               ┌──────────────┐            ┌──────────────┐
  │ openconsole  │──outbound────▶│  sessions    │◀───────────│   browser    │
- │  shell + PTY │   WebSocket   │  + bridges   │ WebSocket  │      or      │
- └──────────────┘               │  + web UI    │            │ openconsole  │
-                                └──────────────┘            │     join     │
+ │  shell + PTY │   WebSocket   │  + bridges   │ WebSocket  ├──────────────┤
+ └──────────────┘               │  + web UI    │◀───────────│ openconsole  │
+                                │  + sshd      │            │     join     │
+                                └──────────────┘◀───────────├──────────────┤
+                                                    SSH     │ ssh <session>│
+                                                            │    @relay    │
                                                             └──────────────┘
 ```
 
@@ -98,7 +105,24 @@ Open the printed link in a browser, or from another terminal:
 ./bin/openconsole join <ticket>
 ```
 
-Both are now the same shell. Type in either. Press **Ctrl-]** to
+Both are now the same shell.
+
+### Joining over SSH
+
+Start the relay with SSH enabled and guests need nothing installed at all:
+
+```sh
+./bin/openconsole-server -ssh-listen :2222 -ssh-host-key ./ssh_host_key
+```
+
+```sh
+ssh -p 2222 <session-id>@your-relay
+# Session token: <paste the part of the ticket after the dot>
+```
+
+The token is answered at a prompt rather than passed as an argument, so it stays
+out of shell history and out of `ps`. Keep the host key file: SSH clients pin it,
+and regenerating it makes every returning guest see a host-key-changed warning. Type in either. Press **Ctrl-]** to
 detach as a guest; type `exit` as the host to end the session for everyone.
 
 Pointing at a relay somewhere else:
@@ -173,7 +197,12 @@ Precedence is **defaults → environment → flags**.
 | `-listen` | `OPENCONSOLE_LISTEN_ADDR` | `:8080` | Listen address |
 | `-session-ttl` | `OPENCONSOLE_SESSION_TTL` | `30m` | Lifetime of an unclaimed session |
 | `-log-level` | `OPENCONSOLE_LOG_LEVEL` | `info` | `debug`\|`info`\|`warn`\|`error` |
+| `-ssh-listen` | `OPENCONSOLE_SSH_ADDR` | off | Enable SSH joins, e.g. `:2222` |
+| `-ssh-host-key` | `OPENCONSOLE_SSH_HOST_KEY` | ephemeral | Host key path, created if absent |
 | `-healthcheck` | — | — | Probe a running relay and exit |
+
+SSH is off unless `-ssh-listen` is set: an upgrade should not start listening on
+a new port unasked.
 
 Durations are Go duration strings (`30m`, `1h30m`). A bare `30` is rejected
 rather than guessed at.
@@ -217,6 +246,7 @@ internal/terminal/        PTY and shell handling
 internal/server/          HTTP API, tunnel endpoint, config, lifecycle
 internal/client/          CLI: share, join, relay API client
 internal/webui/           embeds and serves the built browser client
+internal/sshd/            SSH listener; joins stock ssh clients to a terminal
 web/                      browser client sources (TypeScript, Vite, xterm.js)
 brand/                    logo, icons, social image
 deploy/                   compose file and proxy configuration
@@ -256,6 +286,11 @@ working UI. Rebuild and commit it alongside any change under `web/src`. See
 - **Nobody's terminal freezes for someone else.** A guest that falls behind is
   disconnected rather than allowed to apply backpressure; if the relay stops
   keeping up, the host stops sharing and the local shell carries on.
+- **One bridge, three kinds of guest.** `internal/session` declares the `Stream`
+  interface it needs instead of importing a transport, so a WebSocket, an SSH
+  channel and an in-memory pipe all satisfy it. Adding SSH took a ~100-line
+  adapter and no change to the fan-out, scrollback, backpressure or teardown
+  logic at all.
 - **The browser link is a capability URL, by design.** The token sits in the
   fragment (`/s/<id>#<token>`), which browsers never transmit — so the relay
   sees only the session path, and the credential stays out of access logs and
@@ -271,6 +306,8 @@ Not yet suitable for exposure to the public internet:
 - Anyone holding a ticket or link has full write access; read-only guests are
   roadmap. A link is a bearer capability and cannot be revoked short of ending
   the session.
+- SSH auth is bounded per connection but not across them; nothing rate-limits
+  connections per source.
 - TLS is assumed to be terminated by a proxy in front of the relay.
 
 The full list is in

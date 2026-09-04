@@ -7,9 +7,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/SmugZombie/OpenConsole/internal/session"
+	"github.com/SmugZombie/OpenConsole/internal/sshd"
 )
 
 // Server owns the listener, the HTTP server and the session manager's
@@ -21,6 +25,9 @@ type Server struct {
 	bridges  *session.Bridges
 	http     *http.Server
 	ln       net.Listener
+
+	// ssh is the optional SSH listener. Nil when SSH is disabled.
+	ssh *sshd.Server
 
 	// baseCtx bounds every live tunnel. WebSocket connections are hijacked,
 	// so http.Server.Shutdown does not wait for them or close them; cancelling
@@ -51,12 +58,30 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 		return nil, fmt.Errorf("listen on %s: %w", cfg.ListenAddr, err)
 	}
 
+	sshServer, err := newSSH(cfg, log, sessions, bridges, version)
+	if err != nil {
+		baseCancel()
+		ln.Close()
+		return nil, err
+	}
+	if sshServer != nil {
+		// Advertised to clients so the host CLI can print a working ssh
+		// command. The port is taken from the bound listener rather than the
+		// configured address, so ":0" in a test resolves correctly.
+		if _, port, err := net.SplitHostPort(sshServer.Addr()); err == nil {
+			if n, err := strconv.Atoi(port); err == nil {
+				api.SetSSHPort(n)
+			}
+		}
+	}
+
 	return &Server{
 		cfg:        cfg,
 		log:        log,
 		sessions:   sessions,
 		bridges:    bridges,
 		ln:         ln,
+		ssh:        sshServer,
 		baseCtx:    baseCtx,
 		baseCancel: baseCancel,
 		http: &http.Server{
@@ -77,6 +102,48 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 // when the configured address used port 0.
 func (s *Server) Addr() string { return s.ln.Addr().String() }
 
+// SSHAddr reports the SSH listener's address, or "" when SSH is disabled.
+func (s *Server) SSHAddr() string {
+	if s.ssh == nil {
+		return ""
+	}
+	return s.ssh.Addr()
+}
+
+// newSSH builds the SSH listener, or returns nil when SSH is off.
+func newSSH(cfg Config, log *slog.Logger, sessions *session.Manager, bridges *session.Bridges, version string) (*sshd.Server, error) {
+	if !cfg.SSHEnabled() {
+		return nil, nil
+	}
+
+	var (
+		hostKey ssh.Signer
+		err     error
+	)
+	if cfg.SSHHostKey != "" {
+		hostKey, err = sshd.LoadOrCreateHostKey(cfg.SSHHostKey)
+	} else {
+		hostKey, err = sshd.GenerateHostKey()
+		if err == nil {
+			// Loud, because the symptom is confusing: every returning guest
+			// gets the host-key-changed warning that normally means an attack.
+			log.Warn("ssh host key is ephemeral and changes on restart; set -ssh-host-key to persist it")
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return sshd.New(sshd.Options{
+		Addr:     cfg.SSHAddr,
+		HostKey:  hostKey,
+		Sessions: sessions,
+		Bridges:  bridges,
+		Log:      log,
+		Version:  version,
+	})
+}
+
 // Run serves until ctx is cancelled, then shuts down gracefully, giving
 // in-flight requests up to ShutdownTimeout to finish. It returns nil on a
 // clean shutdown.
@@ -84,6 +151,15 @@ func (s *Server) Run(ctx context.Context) error {
 	sweeperCtx, stopSweeper := context.WithCancel(ctx)
 	defer stopSweeper()
 	go s.sessions.Run(sweeperCtx)
+
+	if s.ssh != nil {
+		s.log.Info("ssh joins enabled", slog.String("addr", s.SSHAddr()))
+		go func() {
+			if err := s.ssh.Run(ctx); err != nil {
+				s.log.Error("ssh listener stopped", slog.Any("error", err))
+			}
+		}()
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -112,6 +188,10 @@ func (s *Server) Run(ctx context.Context) error {
 	defer cancel()
 
 	err := s.http.Shutdown(shutdownCtx)
+
+	if s.ssh != nil {
+		_ = s.ssh.Close()
+	}
 
 	// Shutdown does not touch hijacked WebSocket connections, so tunnels are
 	// closed explicitly: tell peers first, then cancel the context their

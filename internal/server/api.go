@@ -27,6 +27,8 @@ type healthResponse struct {
 	Sessions int    `json:"sessions"`
 	// Tunnels counts sessions with a host terminal currently connected.
 	Tunnels int `json:"tunnels"`
+	// SSHPort is the relay's SSH port, or 0 when SSH joins are disabled.
+	SSHPort int `json:"ssh_port,omitempty"`
 }
 
 // createSessionResponse is returned once, to the creator, and is the only
@@ -38,6 +40,11 @@ type createSessionResponse struct {
 	CreatedAt  time.Time `json:"created_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
 	ExpiresIn  int       `json:"expires_in_seconds"`
+	// SSHPort is the relay's SSH port, present only when SSH joins are
+	// enabled. It is relay capability rather than session state, but it is
+	// returned here so the host CLI can print the ssh command without a second
+	// round trip at exactly the moment it needs to.
+	SSHPort int `json:"ssh_port,omitempty"`
 }
 
 // sessionResponse is the public view of a session: no credentials.
@@ -61,6 +68,9 @@ type API struct {
 	log      *slog.Logger
 	version  string
 	now      func() time.Time
+
+	// sshPort is 0 when SSH joins are disabled.
+	sshPort int
 
 	// baseCtx bounds tunnel connections. A tunnel outlives the HTTP handler
 	// that created it, so it cannot use the request context; it needs one tied
@@ -90,6 +100,10 @@ func NewAPI(sessions *session.Manager, bridges *session.Bridges, log *slog.Logge
 	}
 }
 
+// SetSSHPort records the SSH port to advertise to clients. Zero disables the
+// advertisement.
+func (a *API) SetSSHPort(port int) { a.sshPort = port }
+
 // Routes builds the HTTP handler for the relay API.
 //
 // The Go 1.22 pattern router is used rather than a third-party mux: it covers
@@ -118,6 +132,7 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Version:  a.version,
 		Sessions: a.sessions.Len(),
 		Tunnels:  a.bridges.Len(),
+		SSHPort:  a.sshPort,
 	})
 }
 
@@ -148,6 +163,7 @@ func (a *API) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:  s.CreatedAt.UTC(),
 		ExpiresAt:  s.ExpiresAt.UTC(),
 		ExpiresIn:  int(s.ExpiresAt.Sub(a.now()).Seconds()),
+		SSHPort:    a.sshPort,
 	})
 }
 

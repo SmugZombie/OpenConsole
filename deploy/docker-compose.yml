@@ -19,14 +19,29 @@ services:
 
     ports:
       - "${OPENCONSOLE_PORT:-8080}:8080"
+      # SSH joins: `ssh <session>@host -p 2222`. Map to 22 on a host that has
+      # nothing else there.
+      - "${OPENCONSOLE_SSH_PORT:-2222}:2222"
 
     environment:
       OPENCONSOLE_LISTEN_ADDR: ":8080"
       OPENCONSOLE_SESSION_TTL: "${OPENCONSOLE_SESSION_TTL:-30m}"
       OPENCONSOLE_LOG_LEVEL: "${OPENCONSOLE_LOG_LEVEL:-info}"
+      # SSH is opt-in; this is the opt-in. Remove both of these to run
+      # WebSocket-only.
+      OPENCONSOLE_SSH_ADDR: ":2222"
+      # The host key must outlive the container. Without it every restart
+      # greets returning guests with the host-key-changed warning that normally
+      # means an active attack.
+      OPENCONSOLE_SSH_HOST_KEY: "/var/lib/openconsole/ssh_host_key"
 
-    # The relay holds sessions in memory and writes nothing to disk, so the
-    # filesystem can be read-only and every privilege dropped.
+    volumes:
+      # The only state the relay keeps on disk. Sessions stay in memory.
+      - openconsole-state:/var/lib/openconsole
+
+    # The relay keeps sessions in memory; the SSH host key is the one thing it
+    # writes, and that lives on the named volume above. Everything else can be
+    # read-only with every privilege dropped.
     read_only: true
     cap_drop: [ALL]
     security_opt:
@@ -54,3 +69,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  openconsole-state:

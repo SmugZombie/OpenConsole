@@ -7,8 +7,8 @@ that relay.
 
 This document describes the whole planned system and marks what exists today.
 Terminal sharing works: a host shares a real shell, and guests attach from
-another terminal or from a browser. SSH access and TCP forwarding are still to
-come.
+another terminal, a browser, or a stock ssh client. TCP forwarding and
+end-to-end encryption are still to come.
 
 ## The problem
 
@@ -28,7 +28,9 @@ both sides dial out to, so neither end needs to be reachable.
  │  shell ↔ PTY │──outbound────▶│  sessions    │◀───────────│ openconsole  │
  │  (terminal)  │   WebSocket   │  + bridges   │ WebSocket  │    join      │
  └──────────────┘               │  + web UI    │            ├──────────────┤
-                                └──────────────┘            │  ssh (later) │
+                                │  + sshd      │            ├──────────────┤
+                                └──────────────┘            │ ssh <session>│
+                                                            │    @relay    │
                                                             └──────────────┘
 ```
 
@@ -56,6 +58,7 @@ executes anything; it is a broker. Stateless beyond memory, and shipped as a
 | `internal/tunnel` | Transport. The only package that knows WebSockets exist. | ✅ |
 | `internal/terminal` | PTY and shell handling. Produces and consumes bytes. | ✅ |
 | `internal/webui` | Serves the embedded browser client. | ✅ |
+| `internal/sshd` | SSH listener; joins stock ssh clients to a terminal. | ✅ |
 | `web/` | Browser client sources: TypeScript, Vite, xterm.js. | ✅ |
 
 The layering rule that everything else follows from: **terminal data is never
@@ -231,6 +234,70 @@ whenever it changes, and pick a font size that makes that grid fit their window
 — they never resize someone else's real terminal. A `RESIZE` from a guest is
 ignored by the relay.
 
+## SSH joins
+
+A guest can join with the ssh client they already have:
+
+```sh
+ssh <session-id>@console.example.com
+```
+
+The username is the public session ID. The guest token is the answer to a
+`Session token:` prompt — keyboard-interactive, echo off — so it never reaches
+the command line, the guest's shell history, or `ps`. Password auth is also
+accepted, for scripted clients that cannot answer a prompt.
+
+### An SSH channel is just another Stream
+
+This is where the Phase 2 interface design paid off. `internal/session` declares
+the `Stream` interface it needs, and an SSH channel satisfies it with a ~100-line
+adapter:
+
+```
+inbound  bytes  -> DATA frames
+outbound DATA   -> bytes
+outbound RESIZE -> dropped; an SSH client owns its own window
+outbound PING   -> dropped; SSH has keepalives of its own
+outbound CLOSE  -> exit-status, then close
+outbound ERROR  -> stderr, then close
+```
+
+Fan-out, scrollback replay, backpressure and teardown are reused unchanged. The
+bridge needed no modification at all to gain a third kind of guest, and the host
+CLI needed none to be joined by one.
+
+The host shell's exit code is passed through as SSH `exit-status`, so
+`ssh <session>@relay && echo ok` behaves the way it would against a real shell.
+
+### What the SSH server refuses
+
+It is a broker, not a shell host, and the request policy says so:
+
+- `exec` (`ssh host somecommand`) and subsystems (SFTP/SCP) are refused. The
+  relay executes nothing.
+- `direct-tcpip` is refused, so the relay cannot become a port-forwarding jump
+  host.
+- `window-change` is acknowledged and ignored, because the host owns its
+  terminal's size.
+
+A refused request closes the channel immediately rather than leaving the client
+waiting for a shell that will never come.
+
+### The host key
+
+The one piece of state the relay writes to disk. Clients pin it on first
+connection, so a key that changes on restart greets every returning guest with
+the warning that normally means an active attack — which trains them to ignore
+it. `-ssh-host-key` names a path; the relay creates an ed25519 key there on
+first start, mode 0600, in OpenSSH's own format so `ssh-keygen -l -f` works. The
+fingerprint is logged at every start for operators to publish.
+
+With no path configured the key is ephemeral and the relay warns. Fine for a
+trial, wrong for anything reached twice.
+
+SSH is **opt-in**: no `-ssh-listen`, no listener. An upgrade should never start
+listening on a new port without the operator asking.
+
 ## Deployment
 
 The relay ships as a `scratch` image containing one static binary, running as
@@ -251,8 +318,8 @@ fails to connect.
 | 1 | Sessions, IDs/tokens, HTTP API, config, logging, docs. | ✅ |
 | 2 | PTY + shell, WebSocket tunnel, host↔guest streaming, terminal guest client, container image. | ✅ |
 | 3 | Browser client: Vite + TypeScript + xterm.js, embedded in the relay. | ✅ |
-| 4 | Native SSH access (`ssh <session>@relay`). | next |
-| 5 | Multiplexed channels for TCP forwarding; read-only guests. | |
+| 4 | Native SSH access (`ssh <session>@relay`). | ✅ |
+| 5 | Multiplexed channels for TCP forwarding; read-only guests. | next |
 | 6 | End-to-end encryption between host and guest. | |
 
 ## Known gaps
@@ -279,7 +346,11 @@ fails to connect.
 8. **A guest link is a bearer capability.** Anyone who obtains the full URL has
    the terminal. It cannot be revoked short of ending the session, and there is
    no per-guest identity or audit trail.
-9. **The committed web bundle can go stale.** `internal/webui/dist` is generated
+9. **SSH authentication is unthrottled across connections.** `MaxAuthTries`
+   bounds guesses per connection, but nothing limits connections per source. A
+   256-bit token makes guessing hopeless; this is about the work an
+   unauthenticated peer can make the relay do.
+10. **The committed web bundle can go stale.** `internal/webui/dist` is generated
    but checked in so `go build` needs no Node. Nothing yet fails a build when it
    is older than `web/src`; the Docker image sidesteps this by rebuilding, but a
    CI check would be better.

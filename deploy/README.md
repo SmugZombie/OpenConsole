@@ -40,9 +40,84 @@ Every setting is an environment variable; see the table in the top-level README.
 | `OPENCONSOLE_LISTEN_ADDR` | `:8080` |
 | `OPENCONSOLE_SESSION_TTL` | `30m` |
 | `OPENCONSOLE_LOG_LEVEL` | `info` |
+| `OPENCONSOLE_SSH_ADDR` | unset — SSH joins disabled |
+| `OPENCONSOLE_SSH_HOST_KEY` | unset — ephemeral key |
 
-Logs are JSON on stderr. There is nothing to mount: no volumes are needed, and
-the container runs with a read-only root filesystem.
+Logs are JSON on stderr. With SSH off there is nothing to mount and the
+container runs read-only with no volumes at all.
+
+## SSH joins
+
+Guests can join with a stock ssh client and nothing installed:
+
+```sh
+ssh <session-id>@console.example.com
+```
+
+The session ID is the username; the guest token is the answer to the `Session
+token:` prompt. The token is never on the command line, so it stays out of the
+guest's shell history and out of `ps`.
+
+**SSH is off unless you turn it on.** An upgrade should not start listening on a
+new port unasked, and the host key is a decision only you can make. The compose
+file turns it on:
+
+```yaml
+environment:
+  OPENCONSOLE_SSH_ADDR: ":2222"
+  OPENCONSOLE_SSH_HOST_KEY: "/var/lib/openconsole/ssh_host_key"
+volumes:
+  - openconsole-state:/var/lib/openconsole
+```
+
+### The host key must persist
+
+This is the one piece of state the relay writes. SSH clients pin a host key on
+first connection, so a key that changes on restart greets every returning guest
+with the warning that normally means an active attack — and teaches them to
+ignore it.
+
+Point `OPENCONSOLE_SSH_HOST_KEY` at a path on a volume. The relay creates the
+key on first start, owner-readable only, in OpenSSH's own format so you can
+inspect and rotate it with the tools you already have:
+
+```sh
+docker compose -f deploy/docker-compose.yml exec relay true   # no shell in the image
+ssh-keygen -l -f /var/lib/docker/volumes/.../ssh_host_key      # or from the host
+```
+
+The relay logs the fingerprint at every start:
+
+```
+{"msg":"ssh listening","addr":"[::]:2222","host_key":"SHA256:stww…"}
+```
+
+Publish that fingerprint so guests can verify the relay on first connection.
+
+Leave `OPENCONSOLE_SSH_HOST_KEY` unset and the relay generates a key per start
+and warns loudly. That is fine for a five-minute trial and wrong for anything
+anyone connects to twice.
+
+### Port 22
+
+`ssh <session>@host` with no `-p` is the nicer experience. Map it in compose:
+
+```yaml
+ports:
+  - "22:2222"
+```
+
+Only on a host with nothing else on 22 — which usually means a dedicated box,
+since you still need your own sshd to administer it. Otherwise keep 2222 and
+tell guests to pass `-p 2222`.
+
+### What the SSH server will not do
+
+It brokers a terminal and nothing else. `exec` (`ssh host somecommand`) and
+subsystems (SFTP/SCP) are refused, and `direct-tcpip` is refused so the relay
+cannot be used as a port-forwarding jump host. The relay never runs a shell for
+an SSH connection — the shell it bridges to is the host's, already running on
+the host's own machine.
 
 ## Behind a reverse proxy
 
@@ -105,6 +180,10 @@ Then point clients at the proxy, not the relay:
 ```sh
 openconsole -server https://console.example.com
 ```
+
+SSH is a separate listener and does not go through the HTTP proxy. Expose its
+port directly, or put a TCP (layer 4) proxy in front of it — an HTTP reverse
+proxy cannot carry it.
 
 ## Before exposing this publicly
 
