@@ -59,17 +59,17 @@ jobs:
       # starts on it. The race detector is left to the Linux job, which runs
       # the same concurrent code with a C toolchain it can rely on.
       #
-      # Two forwarding tests are excluded, and neither is a Windows problem.
-      # Both stall intermittently: TestForwardClosePropagates loses a CLOSE the
-      # writer had already queued, and the slow-reader test has stopped short
-      # of the end of a 4MB stream — while passing in a second on the same
-      # runner the run before, and in 0.06s on a laptop. The cause is a race in
-      # the forward path that this job is only better at provoking; it is being
-      # fixed separately, and these come back when it is.
+      # One forwarding test is excluded, and it is not a Windows problem. The
+      # slow-reader test has stopped 32KB short of the end of a 4MB stream
+      # after a full minute, having passed in a second on the same runner the
+      # run before and in 0.06s on a laptop. 32KB is exactly the granularity of
+      # a window update, so the suspicion is flow control rather than anything
+      # about this platform. It is unexplained, and a longer timeout would only
+      # hide it; it comes back when somebody understands it.
       - name: go test
         run: >
           go test
-          -skip 'TestForwardClosePropagates|TestForwardEndToEndSlowReaderDoesNotResetTheStream'
+          -skip 'TestForwardEndToEndSlowReaderDoesNotResetTheStream'
           ./...
 
       # install.ps1 is only ever run by someone piping it into PowerShell, so
