@@ -157,6 +157,42 @@ container's environment for a one-off run.
 Durations must be Go duration strings (`30m`, `1h30m`). A bare `30` is rejected
 rather than guessed at.
 
+## Who may create a session
+
+Creating a session is the one unauthenticated thing a relay does, so it is the
+one an anonymous caller can lean on. Three limits apply, and the defaults let a
+person on a laptop work without configuring anything:
+
+| Control | Default | Setting |
+| --- | --- | --- |
+| Per-source rate | 30/min, burst 10 | `OPENCONSOLE_CREATE_RATE`, `OPENCONSOLE_CREATE_BURST` |
+| Live session ceiling | 512 | `OPENCONSOLE_MAX_SESSIONS` |
+| Shared secret | none | `OPENCONSOLE_CREATE_TOKEN` |
+
+The secret is what turns an open relay into a private one. It is read from the
+environment and never a flag, because a command line is visible to every process
+on the machine, and it is compared in constant time like every other credential
+here. It is checked *before* the rate limit, so an authorised caller is not
+throttled alongside whoever else is probing the relay.
+
+### Identifying a source is the hard part
+
+A per-source limit is only as good as the source. Behind a reverse proxy every
+request arrives from the proxy, so keying on the socket address would make one
+shared bucket for the whole internet — worse than no limit, because it looks
+like it works.
+
+`X-Forwarded-For` fixes that and is attacker-controlled, so it is honoured only
+when the connection itself came from a network the operator listed in
+`OPENCONSOLE_TRUSTED_PROXIES`. The chain is then walked **from the right**,
+skipping hops we vouch for, and the first address outside them is the client.
+Taking the leftmost entry instead — the usual mistake — takes whatever the
+caller wrote down.
+
+The bucket table is itself keyed by an attacker-chosen value, so it is swept of
+idle entries and capped. Past the cap new sources are refused rather than
+admitted: refusing is the safe failure when the thing being defended is memory.
+
 ## The live session bridge
 
 A session record and its live wiring are separate things. A session exists as
@@ -362,12 +398,23 @@ this wrong would mean one guest's database connection receiving another's bytes,
 so it is covered by a test that opens the same guest-side channel number from
 two guests and checks the streams stay apart.
 
-### What is not there yet
+### Flow control
 
-No per-channel flow control. A forward that overruns its queue is closed, so
-one stream resets rather than the terminal stalling or bytes being silently
-lost. Windows are the obvious next step. There is also no remote forwarding
-(ssh's `-R`); only guests initiate.
+Each direction of each channel has a byte window, starting at 256 KiB. The
+receiver grants credit as it consumes; the sender waits when the credit runs
+out. That is what stops a fast target from outrunning a guest on a poor link.
+
+Crediting happens *after* the local write succeeds, which is what ties the
+window to the reader's actual pace rather than to how quickly frames were
+unpacked. The relay routes `WINDOW` frames like any other, translating channel
+IDs; it does not consume credit itself, so the window is genuinely end to end.
+
+The relay's per-forward queue is now a backstop rather than a limit anyone
+reaches: nothing can be in flight beyond what was granted. A forward that
+somehow overruns it is still closed, because dropping TCP bytes would silently
+corrupt the stream.
+
+There is no remote forwarding (ssh's `-R`); only guests initiate.
 
 ## Deployment
 
@@ -395,37 +442,26 @@ fails to connect.
 
 ## Known gaps
 
-1. **No authentication on `POST /api/v1/sessions`.** Anyone who can reach the
-   relay can create sessions. Fine for a self-hosted relay on a trusted network;
-   a public relay needs at minimum a rate limit and probably a shared secret.
-2. **No rate limiting or session cap.** Session creation is unbounded, which is
-   a memory-exhaustion vector. The container limits in `docker-compose.yml`
-   bound the blast radius but are not a substitute.
-3. **Tokens are bearer credentials in cleartext.** TLS is assumed to be
+1. **Tokens are bearer credentials in cleartext.** TLS is assumed to be
    terminated by a proxy in front of the relay. This is documented in
    `deploy/README.md` but not enforced by the code.
-4. **The relay sees plaintext terminal traffic.** Anyone who controls the relay
+2. **The relay sees plaintext terminal traffic.** Anyone who controls the relay
    can read and inject keystrokes. End-to-end encryption is roadmap, and until
    it exists "self-hosted" is doing real security work.
-5. **A link cannot be revoked** short of ending the session, and there is no
+3. **A link cannot be revoked** short of ending the session, and there is no
    per-guest identity or audit trail.
-6. **Single-process only.** Sessions and bridges live in one process's memory,
+4. **Single-process only.** Sessions and bridges live in one process's memory,
    so the relay cannot be horizontally scaled without sticky routing.
-7. **No Windows host support.** Sharing needs a PTY; ConPTY is not wired up. The
+5. **No Windows host support.** Sharing needs a PTY; ConPTY is not wired up. The
    relay and the join client build and run on Windows, but `openconsole` cannot
    share a terminal there.
-8. **A guest link is a bearer capability.** Anyone who obtains the full URL has
+6. **A guest link is a bearer capability.** Anyone who obtains the full URL has
    the terminal. It cannot be revoked short of ending the session, and there is
    no per-guest identity or audit trail.
-9. **Forwarded streams have no flow control.** A bulk transfer over a link the
-   guest cannot drain fast enough resets that one stream. The terminal is never
-   affected and no bytes are lost silently, but per-channel windows would avoid
-   the reset entirely.
-10. **SSH authentication is unthrottled across connections.** `MaxAuthTries`
-   bounds guesses per connection, but nothing limits connections per source. A
-   256-bit token makes guessing hopeless; this is about the work an
-   unauthenticated peer can make the relay do.
-11. **The committed web bundle can go stale.** `internal/webui/dist` is generated
+7. **SSH authentication is unthrottled across connections.** `MaxAuthTries`
+   bounds guesses per connection, but nothing limits connections per source, and
+   the HTTP rate limiter does not cover the SSH listener.
+8. **The committed web bundle can go stale.** `internal/webui/dist` is generated
    but checked in so `go build` needs no Node. Nothing yet fails a build when it
    is older than `web/src`; the Docker image sidesteps this by rebuilding, but a
    CI check would be better.

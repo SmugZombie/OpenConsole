@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +22,13 @@ const (
 	DefaultListenAddr = ":8080"
 	DefaultSessionTTL = 30 * time.Minute
 	DefaultLogLevel   = "info"
+
+	// Session creation is unauthenticated by default, so these two are what
+	// stand between a public relay and a memory-exhaustion flood. The defaults
+	// are generous for a person and restrictive for a script.
+	DefaultCreateRate  = 30 // sessions per minute, per source
+	DefaultCreateBurst = 10
+	DefaultMaxSessions = 512
 
 	// Timeouts guard against slow-loris style clients holding connections
 	// open. They are generous enough for ordinary API calls and will need
@@ -38,6 +46,24 @@ type Config struct {
 	SessionTTL      time.Duration
 	LogLevel        string
 	ShutdownTimeout time.Duration
+
+	// CreateRatePerMin limits session creation per source address. Zero
+	// disables rate limiting.
+	CreateRatePerMin int
+	// CreateBurst is how many may be created at once before the rate applies.
+	CreateBurst int
+	// MaxSessions caps live sessions. Zero means no cap.
+	MaxSessions int
+	// CreateToken, when set, is a shared secret required to create a session.
+	// Presented as "Authorization: Bearer <token>".
+	//
+	// This is what turns an open relay into a private one. It is deliberately
+	// not required by default: a relay on a trusted network should work out of
+	// the box.
+	CreateToken string
+	// TrustedProxies are the networks whose X-Forwarded-For is believed. Empty
+	// trusts none, which makes the rate limit key on the socket address.
+	TrustedProxies TrustedProxies
 
 	// SSHAddr enables the SSH listener when set, e.g. ":2222".
 	//
@@ -58,10 +84,13 @@ type Config struct {
 // DefaultConfig returns the configuration used when nothing is overridden.
 func DefaultConfig() Config {
 	return Config{
-		ListenAddr:      DefaultListenAddr,
-		SessionTTL:      DefaultSessionTTL,
-		LogLevel:        DefaultLogLevel,
-		ShutdownTimeout: DefaultShutdownTimeout,
+		ListenAddr:       DefaultListenAddr,
+		SessionTTL:       DefaultSessionTTL,
+		LogLevel:         DefaultLogLevel,
+		ShutdownTimeout:  DefaultShutdownTimeout,
+		CreateRatePerMin: DefaultCreateRate,
+		CreateBurst:      DefaultCreateBurst,
+		MaxSessions:      DefaultMaxSessions,
 	}
 }
 
@@ -72,6 +101,12 @@ const (
 	EnvLogLevel   = "OPENCONSOLE_LOG_LEVEL"
 	EnvSSHAddr    = "OPENCONSOLE_SSH_ADDR"
 	EnvSSHHostKey = "OPENCONSOLE_SSH_HOST_KEY"
+
+	EnvCreateRate     = "OPENCONSOLE_CREATE_RATE"
+	EnvCreateBurst    = "OPENCONSOLE_CREATE_BURST"
+	EnvMaxSessions    = "OPENCONSOLE_MAX_SESSIONS"
+	EnvCreateToken    = "OPENCONSOLE_CREATE_TOKEN"
+	EnvTrustedProxies = "OPENCONSOLE_TRUSTED_PROXIES"
 )
 
 // LoadConfig resolves configuration from defaults, then environment variables,
@@ -101,6 +136,26 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	if v := getenv(EnvSSHHostKey); v != "" {
 		cfg.SSHHostKey = v
 	}
+	for _, e := range []struct {
+		name string
+		dst  *int
+	}{
+		{EnvCreateRate, &cfg.CreateRatePerMin},
+		{EnvCreateBurst, &cfg.CreateBurst},
+		{EnvMaxSessions, &cfg.MaxSessions},
+	} {
+		if v := getenv(e.name); v != "" {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n < 0 {
+				return Config{}, fmt.Errorf("%s: want a non-negative integer, got %q", e.name, v)
+			}
+			*e.dst = n
+		}
+	}
+	// The secret is read from the environment only. A command line is visible
+	// to every process on the machine.
+	cfg.CreateToken = strings.TrimSpace(getenv(EnvCreateToken))
+	trustedSpec := getenv(EnvTrustedProxies)
 
 	fs := flag.NewFlagSet("openconsole-server", flag.ContinueOnError)
 	fs.SetOutput(output)
@@ -111,6 +166,14 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 		"enable SSH joins on this address, e.g. :2222 (env "+EnvSSHAddr+"); empty disables SSH")
 	fs.StringVar(&cfg.SSHHostKey, "ssh-host-key", cfg.SSHHostKey,
 		"path to the SSH host key, created if absent (env "+EnvSSHHostKey+")")
+	fs.IntVar(&cfg.CreateRatePerMin, "create-rate", cfg.CreateRatePerMin,
+		"session creations per minute per source, 0 to disable (env "+EnvCreateRate+")")
+	fs.IntVar(&cfg.CreateBurst, "create-burst", cfg.CreateBurst,
+		"session creations allowed at once per source (env "+EnvCreateBurst+")")
+	fs.IntVar(&cfg.MaxSessions, "max-sessions", cfg.MaxSessions,
+		"maximum live sessions, 0 for no limit (env "+EnvMaxSessions+")")
+	trusted := fs.String("trusted-proxies", trustedSpec,
+		"CIDRs whose X-Forwarded-For is believed (env "+EnvTrustedProxies+")")
 	fs.BoolVar(&cfg.RunHealthCheck, "healthcheck", false, "probe a running relay's /health and exit (for container HEALTHCHECK)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -120,6 +183,12 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 		return Config{}, fmt.Errorf("-session-ttl: %w", err)
 	}
 	cfg.SessionTTL = d
+
+	proxies, err := ParseTrustedProxies(*trusted)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.TrustedProxies = proxies
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -137,6 +206,12 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseLogLevel(c.LogLevel); err != nil {
 		return err
+	}
+	if c.CreateRatePerMin < 0 {
+		return fmt.Errorf("create rate must not be negative")
+	}
+	if c.MaxSessions < 0 {
+		return fmt.Errorf("max sessions must not be negative")
 	}
 	if c.SSHAddr == "" && c.SSHHostKey != "" {
 		return fmt.Errorf("-ssh-host-key was given but SSH is disabled; set -ssh-listen too")

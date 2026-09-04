@@ -3,12 +3,14 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +77,15 @@ type API struct {
 	// sshPort is 0 when SSH joins are disabled.
 	sshPort int
 
+	// createLimit throttles session creation per source; nil disables it.
+	createLimit *rateLimiter
+	// createToken, when set, is required to create a session.
+	createToken string
+	// proxies decides whose X-Forwarded-For is believed when identifying a
+	// source. Without it a relay behind a proxy would see every request as
+	// coming from the proxy, making the rate limit one shared bucket.
+	proxies TrustedProxies
+
 	// baseCtx bounds tunnel connections. A tunnel outlives the HTTP handler
 	// that created it, so it cannot use the request context; it needs one tied
 	// to the server's lifetime so shutdown can end every tunnel.
@@ -106,6 +117,13 @@ func NewAPI(sessions *session.Manager, bridges *session.Bridges, log *slog.Logge
 // SetSSHPort records the SSH port to advertise to clients. Zero disables the
 // advertisement.
 func (a *API) SetSSHPort(port int) { a.sshPort = port }
+
+// SetCreatePolicy configures who may create sessions and how often.
+func (a *API) SetCreatePolicy(cfg Config) {
+	a.createLimit = newRateLimiter(cfg.CreateRatePerMin, cfg.CreateBurst, nil)
+	a.createToken = cfg.CreateToken
+	a.proxies = cfg.TrustedProxies
+}
 
 // Routes builds the HTTP handler for the relay API.
 //
@@ -145,7 +163,42 @@ func (a *API) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	defer r.Body.Close()
 
+	source := a.proxies.ClientIP(r)
+
+	// The shared secret, when one is configured, is checked before the rate
+	// limit: an authorised caller should not be throttled alongside whoever
+	// else is probing the relay.
+	if a.createToken != "" && !a.authorizedToCreate(r) {
+		a.log.InfoContext(r.Context(), "session creation refused",
+			slog.String("reason", "bad or missing token"),
+			slog.String("remote", source))
+		// 401 with a challenge, so a client knows what is missing rather than
+		// assuming the relay is broken.
+		w.Header().Set("WWW-Authenticate", `Bearer realm="openconsole"`)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "a token is required to create a session")
+		return
+	}
+
+	if ok, retry := a.createLimit.allow(source); !ok {
+		a.log.InfoContext(r.Context(), "session creation rate limited",
+			slog.String("remote", source),
+			slog.Duration("retry_after", retry))
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds()+0.999)))
+		writeError(w, http.StatusTooManyRequests, "rate_limited",
+			"too many sessions created from here; try again shortly")
+		return
+	}
+
 	s, err := a.sessions.Create(r.Context())
+	if errors.Is(err, session.ErrTooManySessions) {
+		a.log.WarnContext(r.Context(), "session creation refused",
+			slog.String("reason", "relay at capacity"),
+			slog.Int("sessions", a.sessions.Len()))
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusServiceUnavailable, "at_capacity",
+			"this relay is holding as many sessions as it allows")
+		return
+	}
 	if err != nil {
 		a.log.ErrorContext(r.Context(), "create session failed", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not create session")
@@ -192,6 +245,25 @@ func (a *API) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		a.log.ErrorContext(r.Context(), "session lookup failed", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not look up session")
 	}
+}
+
+// SweepRateLimiter drops idle rate-limit buckets. The bucket table is keyed by
+// a source address, which is attacker-chosen, so leaving it to grow would be
+// the very leak this limiter exists to prevent.
+func (a *API) SweepRateLimiter() int { return a.createLimit.sweep() }
+
+// authorizedToCreate checks the shared secret.
+//
+// Compared in constant time: a byte-by-byte comparison would leak the correct
+// prefix through timing, the same reasoning as session tokens.
+func (a *API) authorizedToCreate(r *http.Request) bool {
+	header := r.Header.Get("Authorization")
+	presented, ok := strings.CutPrefix(header, "Bearer ")
+	if !ok {
+		return false
+	}
+	return subtle.ConstantTimeCompare(
+		[]byte(strings.TrimSpace(presented)), []byte(a.createToken)) == 1
 }
 
 // withLogging records one structured line per request. Neither query strings

@@ -34,7 +34,15 @@ type hostForwards struct {
 	log   *slog.Logger
 
 	mu    sync.Mutex
-	conns map[protocol.ChannelID]net.Conn
+	conns map[protocol.ChannelID]*hostConn
+}
+
+// hostConn is one dialled socket and the credit it may still send.
+type hostConn struct {
+	conn net.Conn
+	// out is what the guest will still accept from us. Reading from the
+	// target faster than the guest drains it is what used to force a reset.
+	out *window
 }
 
 func newHostForwards(allow Allowlist, send func(protocol.Frame), log *slog.Logger) *hostForwards {
@@ -45,7 +53,7 @@ func newHostForwards(allow Allowlist, send func(protocol.Frame), log *slog.Logge
 		allow: allow,
 		send:  send,
 		log:   log,
-		conns: make(map[protocol.ChannelID]net.Conn),
+		conns: make(map[protocol.ChannelID]*hostConn),
 	}
 }
 
@@ -56,8 +64,24 @@ func (h *hostForwards) handle(ctx context.Context, f protocol.Frame) {
 		go h.openChannel(ctx, f)
 	case protocol.TypeData:
 		h.write(f)
+	case protocol.TypeWindow:
+		h.grant(f)
 	case protocol.TypeClose, protocol.TypeError:
 		h.close(f.Channel)
+	}
+}
+
+// grant credits this channel with room the guest has freed up.
+func (h *hostForwards) grant(f protocol.Frame) {
+	var win protocol.Window
+	if err := protocol.DecodeControl(f, &win); err != nil {
+		return
+	}
+	h.mu.Lock()
+	hc, ok := h.conns[f.Channel]
+	h.mu.Unlock()
+	if ok {
+		hc.out.grant(win.Bytes)
 	}
 }
 
@@ -100,6 +124,8 @@ func (h *hostForwards) openChannel(ctx context.Context, f protocol.Frame) {
 		return
 	}
 
+	hc := &hostConn{conn: conn, out: newWindow(protocol.InitialWindow)}
+
 	h.mu.Lock()
 	if _, exists := h.conns[ch]; exists {
 		h.mu.Unlock()
@@ -107,7 +133,7 @@ func (h *hostForwards) openChannel(ctx context.Context, f protocol.Frame) {
 		h.refuse(ch, protocol.ErrCodeProtocol, "channel already open")
 		return
 	}
-	h.conns[ch] = conn
+	h.conns[ch] = hc
 	h.mu.Unlock()
 
 	h.log.Info("forward opened",
@@ -122,15 +148,22 @@ func (h *hostForwards) openChannel(ctx context.Context, f protocol.Frame) {
 		h.send(fr)
 	}
 
-	go h.pump(ch, conn)
+	go h.pump(ctx, ch, hc)
 }
 
 // pump copies from the target back to the guest until the socket ends.
-func (h *hostForwards) pump(ch protocol.ChannelID, conn net.Conn) {
+func (h *hostForwards) pump(ctx context.Context, ch protocol.ChannelID, hc *hostConn) {
 	buf := make([]byte, forwardBufferSize)
 	for {
-		n, err := conn.Read(buf)
+		n, err := hc.conn.Read(buf)
 		if n > 0 {
+			// Wait for room before sending. This is what turns "read as fast
+			// as the kernel allows and hope" into a stream that keeps pace
+			// with whoever is reading it.
+			if werr := hc.out.reserve(ctx, n); werr != nil {
+				h.closeWithReason(ch, "the forwarded connection ended")
+				return
+			}
 			// Copy: the frame outlives this iteration once queued.
 			h.send(protocol.Frame{
 				Type:    protocol.TypeData,
@@ -152,14 +185,30 @@ func (h *hostForwards) pump(ch protocol.ChannelID, conn net.Conn) {
 // write delivers guest bytes to the target.
 func (h *hostForwards) write(f protocol.Frame) {
 	h.mu.Lock()
-	conn, ok := h.conns[f.Channel]
+	hc, ok := h.conns[f.Channel]
 	h.mu.Unlock()
 	if !ok {
 		// Both ends can close at once, so data after a close is ordinary.
 		return
 	}
-	if _, err := conn.Write(f.Payload); err != nil {
+	if _, err := hc.conn.Write(f.Payload); err != nil {
 		h.closeWithReason(f.Channel, "could not write to the target")
+		return
+	}
+	// Those bytes are spent, so tell the guest it may send that much more.
+	// Crediting only after the write is what makes the window reflect the
+	// target's pace rather than ours.
+	h.creditGuest(f.Channel, len(f.Payload))
+}
+
+// creditGuest returns window space to the guest.
+func (h *hostForwards) creditGuest(ch protocol.ChannelID, n int) {
+	if n <= 0 {
+		return
+	}
+	if fr, err := protocol.NewControl(protocol.TypeWindow, protocol.Window{Bytes: n}); err == nil {
+		fr.Channel = ch
+		h.send(fr)
 	}
 }
 
@@ -167,24 +216,26 @@ func (h *hostForwards) write(f protocol.Frame) {
 // one who closed it.
 func (h *hostForwards) close(ch protocol.ChannelID) {
 	h.mu.Lock()
-	conn, ok := h.conns[ch]
+	hc, ok := h.conns[ch]
 	delete(h.conns, ch)
 	h.mu.Unlock()
 	if ok {
-		conn.Close()
+		hc.out.close()
+		hc.conn.Close()
 	}
 }
 
 // closeWithReason drops a forward and tells the guest why.
 func (h *hostForwards) closeWithReason(ch protocol.ChannelID, reason string) {
 	h.mu.Lock()
-	conn, ok := h.conns[ch]
+	hc, ok := h.conns[ch]
 	delete(h.conns, ch)
 	h.mu.Unlock()
 	if !ok {
 		return
 	}
-	conn.Close()
+	hc.out.close()
+	hc.conn.Close()
 
 	if fr, err := protocol.NewControl(protocol.TypeClose, protocol.Close{Reason: reason}); err == nil {
 		fr.Channel = ch
@@ -205,7 +256,7 @@ func (h *hostForwards) refuse(ch protocol.ChannelID, code, msg string) {
 // closeAll drops every forward, used when the session ends.
 func (h *hostForwards) closeAll() {
 	h.mu.Lock()
-	live := make([]net.Conn, 0, len(h.conns))
+	live := make([]*hostConn, 0, len(h.conns))
 	for ch, c := range h.conns {
 		live = append(live, c)
 		delete(h.conns, ch)
@@ -213,7 +264,8 @@ func (h *hostForwards) closeAll() {
 	h.mu.Unlock()
 
 	for _, c := range live {
-		c.Close()
+		c.out.close()
+		c.conn.Close()
 	}
 }
 

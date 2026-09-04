@@ -29,6 +29,7 @@ type Server struct {
 
 	// ssh is the optional SSH listener. Nil when SSH is disabled.
 	ssh *sshd.Server
+	api *API
 
 	// teardownOnce guards cleanup, which every exit path from Run reaches.
 	teardownOnce sync.Once
@@ -50,11 +51,15 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 		log = slog.Default()
 	}
 
-	sessions := session.NewManager(session.Options{TTL: cfg.SessionTTL})
+	sessions := session.NewManager(session.Options{
+		TTL:         cfg.SessionTTL,
+		MaxSessions: cfg.MaxSessions,
+	})
 	bridges := session.NewBridges(log)
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 	api := NewAPI(sessions, bridges, log, version, baseCtx)
+	api.SetCreatePolicy(cfg)
 
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
@@ -86,6 +91,7 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 		bridges:    bridges,
 		ln:         ln,
 		ssh:        sshServer,
+		api:        api,
 		baseCtx:    baseCtx,
 		baseCancel: baseCancel,
 		http: &http.Server{
@@ -155,6 +161,7 @@ func (s *Server) Run(ctx context.Context) error {
 	sweeperCtx, stopSweeper := context.WithCancel(ctx)
 	defer stopSweeper()
 	go s.sessions.Run(sweeperCtx)
+	go s.sweepRateLimiter(sweeperCtx)
 
 	// Every exit path tears the relay down, including the one where Serve
 	// fails on its own. Without this, an HTTP failure would leave the SSH
@@ -180,7 +187,17 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Info("relay listening",
 			slog.String("addr", s.Addr()),
 			slog.String("session_ttl", s.cfg.SessionTTL.String()),
+			slog.Int("max_sessions", s.cfg.MaxSessions),
+			slog.Int("create_rate_per_min", s.cfg.CreateRatePerMin),
+			slog.Bool("create_token_required", s.cfg.CreateToken != ""),
 		)
+		if s.cfg.CreateToken == "" && s.cfg.TrustedProxies.Empty() {
+			// Worth saying once: behind a proxy without this, every request
+			// looks like it came from the proxy and the per-source limit
+			// becomes a single shared bucket.
+			s.log.Info("no trusted proxies configured; rate limiting keys on the connecting address " +
+				"(set OPENCONSOLE_TRUSTED_PROXIES if a reverse proxy sits in front)")
+		}
 		errCh <- s.http.Serve(s.ln)
 	}()
 
@@ -207,6 +224,20 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.log.Info("shutdown complete")
 	return nil
+}
+
+// sweepRateLimiter periodically forgets sources that have gone quiet.
+func (s *Server) sweepRateLimiter(ctx context.Context) {
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.api.SweepRateLimiter()
+		}
+	}
 }
 
 // teardown closes the listeners and every live tunnel. It is safe to call more

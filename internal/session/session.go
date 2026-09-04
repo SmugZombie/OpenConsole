@@ -21,6 +21,8 @@ var (
 	ErrInvalidID = errors.New("session: invalid id")
 	// ErrClosed means the manager has been shut down.
 	ErrClosed = errors.New("session: manager closed")
+	// ErrTooManySessions means the relay is already holding its maximum.
+	ErrTooManySessions = errors.New("session: too many sessions")
 )
 
 // Session is a single shared terminal.

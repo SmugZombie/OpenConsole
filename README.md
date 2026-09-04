@@ -225,7 +225,17 @@ Precedence is **defaults → environment → flags**.
 | `-log-level` | `OPENCONSOLE_LOG_LEVEL` | `info` | `debug`\|`info`\|`warn`\|`error` |
 | `-ssh-listen` | `OPENCONSOLE_SSH_ADDR` | off | Enable SSH joins, e.g. `:2222` |
 | `-ssh-host-key` | `OPENCONSOLE_SSH_HOST_KEY` | ephemeral | Host key path, created if absent |
+| `-create-rate` | `OPENCONSOLE_CREATE_RATE` | `30` | Session creations per minute per source, `0` disables |
+| `-create-burst` | `OPENCONSOLE_CREATE_BURST` | `10` | Creations allowed at once per source |
+| `-max-sessions` | `OPENCONSOLE_MAX_SESSIONS` | `512` | Live session ceiling, `0` for none |
+| — | `OPENCONSOLE_CREATE_TOKEN` | none | Secret required to create a session |
+| `-trusted-proxies` | `OPENCONSOLE_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
 | `-healthcheck` | — | — | Probe a running relay and exit |
+
+**Behind a reverse proxy, set `-trusted-proxies`.** Without it every request
+looks like it came from the proxy, so the per-source rate limit becomes one
+bucket shared by everyone. `OPENCONSOLE_CREATE_TOKEN` turns an open relay into a
+private one; clients present it as `OPENCONSOLE_RELAY_TOKEN`.
 
 SSH is off unless `-ssh-listen` is set: an upgrade should not start listening on
 a new port unasked.
@@ -244,6 +254,7 @@ rather than guessed at.
 | `-L` | — | — | Forward a local port, `[bind:]port:host:hostport` (join only, repeatable) |
 | `-version` | — | — | Print version and exit |
 | — | `OPENCONSOLE_TICKET` | — | Ticket for `join`, so it stays out of `ps` |
+| — | `OPENCONSOLE_RELAY_TOKEN` | — | Secret, if the relay requires one to share |
 
 Inside a shared shell, `OPENCONSOLE=1` and `OPENCONSOLE_SESSION` are set, so a
 prompt or script can tell it is being watched.
@@ -338,7 +349,8 @@ working UI. Rebuild and commit it alongside any change under `web/src`. See
 
 Not yet suitable for exposure to the public internet:
 
-- Session creation is unauthenticated and unrate-limited.
+- Session creation is unauthenticated by default. It is rate limited and capped,
+  and `OPENCONSOLE_CREATE_TOKEN` closes it entirely, but an open relay is open.
 - The relay sees plaintext terminal traffic — it can read and inject keystrokes.
   End-to-end encryption is roadmap, so "self-hosted" is doing real work here.
 - A link is a bearer capability and cannot be revoked short of ending the

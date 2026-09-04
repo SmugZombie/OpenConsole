@@ -29,6 +29,8 @@ type Config struct {
 	// This is a local flag on purpose. The shell is chosen by the person at
 	// the keyboard; taking it from the relay would be remote code execution.
 	Shell string
+	// RelayToken is the secret a private relay requires to create a session.
+	RelayToken string
 	// AllowForward is the host's list of targets guests may reach, as
 	// host:port entries or the literal "any". Empty means no forwarding, which
 	// is the default: a forward reaches whatever this machine can reach.
@@ -56,6 +58,8 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	fs.SetOutput(output)
 	fs.StringVar(&cfg.Server, "server", cfg.Server, "relay base URL (env "+EnvServer+")")
 	fs.StringVar(&cfg.Shell, "shell", cfg.Shell, "shell to run (default $SHELL)")
+	// Read from the environment only; a command line is world-readable.
+	cfg.RelayToken = getenv(EnvRelayToken)
 	allow := fs.String("allow-forward", "",
 		"share only: comma-separated host:port targets guests may reach, or \"any\" (default none)")
 	var forwards forwardList

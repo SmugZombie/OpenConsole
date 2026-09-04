@@ -19,6 +19,15 @@ import (
 // ChannelTerminal is the channel the shared terminal runs on.
 const ChannelTerminal ChannelID = ChannelControl
 
+// InitialWindow is how many bytes a peer may send on a new channel before it
+// has to wait for credit.
+//
+// This is what keeps a bulk transfer from outrunning whoever is reading it. Too
+// small and a fast link idles waiting for round trips; too large and the relay
+// buffers megabytes per stream. 256 KiB covers a normal bandwidth-delay product
+// while bounding what one channel can pin.
+const InitialWindow = 256 << 10
+
 // MaxChannels bounds how many forwarded streams one tunnel may hold open.
 //
 // Each costs a goroutine, a queue and a socket on the host, so an unbounded

@@ -38,6 +38,10 @@ type apiError struct {
 type Client struct {
 	baseURL string
 	http    *http.Client
+	// token is the relay's shared secret, when it requires one to create a
+	// session. Read from the environment, never a flag: a command line is
+	// visible to every process on the machine.
+	token string
 }
 
 // NewClient returns a client for the relay at baseURL.
@@ -55,6 +59,12 @@ func NewClient(baseURL string) *Client {
 // BaseURL reports the relay this client targets.
 func (c *Client) BaseURL() string { return c.baseURL }
 
+// WithToken supplies the secret a private relay requires to create sessions.
+func (c *Client) WithToken(token string) *Client {
+	c.token = strings.TrimSpace(token)
+	return c
+}
+
 // CreateSession asks the relay for a new session.
 func (c *Client) CreateSession(ctx context.Context) (*Session, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/sessions", nil)
@@ -62,6 +72,9 @@ func (c *Client) CreateSession(ctx context.Context) (*Session, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -88,9 +101,24 @@ func (c *Client) CreateSession(ctx context.Context) (*Session, error) {
 }
 
 // relayError turns a non-success response into a readable error.
+//
+// The three refusals a person actually meets get an explanation of what to do,
+// because "relay returned 401 unauthorized" tells them nothing about the
+// environment variable they are missing.
 func relayError(status int, body []byte) error {
 	var e apiError
-	if err := json.Unmarshal(body, &e); err == nil && e.Code != "" {
+	_ = json.Unmarshal(body, &e)
+
+	switch status {
+	case http.StatusUnauthorized:
+		return fmt.Errorf("this relay requires a token to create sessions; set %s", EnvRelayToken)
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("this relay is rate limiting session creation; try again shortly")
+	case http.StatusServiceUnavailable:
+		return fmt.Errorf("this relay is holding as many sessions as it allows; try again shortly")
+	}
+
+	if e.Code != "" {
 		if e.Message != "" {
 			return fmt.Errorf("relay returned %d %s: %s", status, e.Code, e.Message)
 		}
@@ -98,6 +126,10 @@ func relayError(status int, body []byte) error {
 	}
 	return fmt.Errorf("relay returned HTTP %d", status)
 }
+
+// EnvRelayToken supplies the secret a private relay requires. It is an
+// environment variable and not a flag so it stays out of `ps`.
+const EnvRelayToken = "OPENCONSOLE_RELAY_TOKEN"
 
 // TunnelURL is the WebSocket endpoint for this relay.
 func (c *Client) TunnelURL() string { return c.baseURL + "/api/v1/tunnel" }

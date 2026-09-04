@@ -37,6 +37,7 @@ var typeNames = map[Type]string{
 	TypePong:   "PONG",
 	TypeClose:  "CLOSE",
 	TypeError:  "ERROR",
+	TypeWindow: "WINDOW",
 }
 
 var typeValues = func() map[string]Type {

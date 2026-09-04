@@ -216,6 +216,76 @@ func TestForwardEndToEndRefusedTargetClosesLocalSocket(t *testing.T) {
 	}
 }
 
+// The regression this flow control exists for.
+//
+// A target that produces data far faster than the guest reads it used to fill
+// the relay's queue and reset the stream. With windows the host simply waits,
+// and every byte arrives.
+func TestForwardEndToEndSlowReaderDoesNotResetTheStream(t *testing.T) {
+	// A server that pushes hard the moment it is connected to.
+	const total = 4 << 20 // 4 MiB, far beyond one window
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	payload := bytes.Repeat([]byte("0123456789abcdef"), total/16)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				c.Write(payload)
+			}()
+		}
+	}()
+
+	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	var p int
+	if _, err := fmtSscan(portStr, &p); err != nil {
+		t.Fatal(err)
+	}
+
+	allow, err := ParseAllowlist("any")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig := newForwardRig(t, allow)
+	local := rig.listen("127.0.0.1", uint16(p))
+
+	conn, err := net.DialTimeout("tcp", local, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Read deliberately slowly, in small chunks with pauses, the way a guest on
+	// a poor link behaves.
+	got := make([]byte, 0, total)
+	buf := make([]byte, 4096)
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	for len(got) < total {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			got = append(got, buf[:n]...)
+		}
+		if err != nil {
+			t.Fatalf("read stalled after %d of %d bytes: %v", len(got), total, err)
+		}
+		if len(got)%(256<<10) < 4096 {
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+	if !bytes.Equal(got, payload) {
+		t.Fatal("the stream arrived altered")
+	}
+}
+
 // Two connections through one forward must not be spliced together.
 func TestForwardEndToEndConcurrentConnections(t *testing.T) {
 	_, echoPort := echoServer(t)

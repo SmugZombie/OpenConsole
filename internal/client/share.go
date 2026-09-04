@@ -56,7 +56,7 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 		return 1, err
 	}
 
-	api := NewClient(cfg.Server)
+	api := NewClient(cfg.Server).WithToken(cfg.RelayToken)
 
 	// Everything below assumes a real terminal, so fail before creating a
 	// session that would otherwise leak until its TTL.

@@ -50,6 +50,11 @@ const (
 	TypeClose Type = 6
 	// TypeError reports a fatal condition; the sender may close afterwards.
 	TypeError Type = 7
+	// TypeWindow grants a peer permission to send more bytes on a channel.
+	//
+	// Appended rather than inserted: type values are stable, and an older peer
+	// that has never heard of this simply never sends one.
+	TypeWindow Type = 8
 )
 
 // String implements fmt.Stringer so log output stays readable.
@@ -69,6 +74,8 @@ func (t Type) String() string {
 		return "CLOSE"
 	case TypeError:
 		return "ERROR"
+	case TypeWindow:
+		return "WINDOW"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", uint8(t))
 	}
@@ -76,7 +83,7 @@ func (t Type) String() string {
 
 // Valid reports whether t is a type defined by this protocol version.
 func (t Type) Valid() bool {
-	return t >= TypeOpen && t <= TypeError
+	return t >= TypeOpen && t <= TypeWindow
 }
 
 // ChannelID identifies a logical stream inside one tunnel.
@@ -145,6 +152,15 @@ type Close struct {
 	Reason string `json:"reason,omitempty"`
 	// ExitCode is the shell's exit status when the host terminal ended.
 	ExitCode *int `json:"exit_code,omitempty"`
+}
+
+// Window is the JSON body of a TypeWindow frame.
+//
+// It is a credit, not a level: the receiver reports how many bytes it has
+// consumed and is therefore willing to accept again. Sending a remaining-space
+// figure instead would make every lost or reordered update permanent.
+type Window struct {
+	Bytes int `json:"bytes"`
 }
 
 // Error is the JSON body of a TypeError frame. Code is a short stable token

@@ -24,6 +24,11 @@ type Options struct {
 	SweepInterval time.Duration
 	// Now is the clock, overridable in tests. Zero value means time.Now.
 	Now func() time.Time
+	// MaxSessions caps how many may exist at once. Zero means no cap.
+	//
+	// Sessions are cheap but not free, and creating them is unauthenticated by
+	// default, so without a ceiling a flood is a memory-exhaustion vector.
+	MaxSessions int
 }
 
 // Manager is an in-memory session store, safe for concurrent use.
@@ -35,6 +40,7 @@ type Manager struct {
 	ttl   time.Duration
 	now   func() time.Time
 	sweep time.Duration
+	max   int
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -64,6 +70,7 @@ func NewManager(opts Options) *Manager {
 		ttl:      ttl,
 		now:      now,
 		sweep:    sweep,
+		max:      opts.MaxSessions,
 		sessions: make(map[string]*Session),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -77,6 +84,24 @@ func (m *Manager) TTL() time.Duration { return m.ttl }
 func (m *Manager) Create(ctx context.Context) (*Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	// Check the ceiling before doing the expensive part: generating three
+	// credentials for a request that is about to be refused is work an
+	// attacker would be happy to make the relay repeat.
+	m.mu.Lock()
+	full := m.max > 0 && len(m.sessions) >= m.max
+	if full {
+		m.sweepExpiredLocked(m.now())
+		full = len(m.sessions) >= m.max
+	}
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return nil, ErrClosed
+	}
+	if full {
+		return nil, ErrTooManySessions
 	}
 
 	id, err := NewID()
@@ -110,6 +135,14 @@ func (m *Manager) Create(ctx context.Context) (*Session, error) {
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, ErrClosed
+	}
+	if m.max > 0 && len(m.sessions) >= m.max {
+		// Try reclaiming expired entries before refusing: the ceiling is about
+		// live sessions, not ones nobody has swept yet.
+		m.sweepExpiredLocked(m.now())
+		if len(m.sessions) >= m.max {
+			return nil, ErrTooManySessions
+		}
 	}
 	// A collision is astronomically unlikely with 128 bits of entropy, but
 	// silently overwriting a live session would be a security bug, so refuse.
@@ -196,6 +229,11 @@ func (m *Manager) sweepExpired() int {
 	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.sweepExpiredLocked(now)
+}
+
+// sweepExpiredLocked is sweepExpired with the lock already held.
+func (m *Manager) sweepExpiredLocked(now time.Time) int {
 	n := 0
 	for id, s := range m.sessions {
 		if s.Expired(now) {

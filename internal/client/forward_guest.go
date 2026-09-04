@@ -36,9 +36,10 @@ type guestForward struct {
 	conn net.Conn
 	// ready is closed once the host has accepted or refused the channel, so
 	// no local bytes are sent into a stream that may not exist.
-	ready  chan error
-	once   sync.Once
-	closed bool
+	ready chan error
+	once  sync.Once
+	// out is how much the host will still accept from us.
+	out *window
 }
 
 func newGuestForwards(send func(protocol.Frame), notify func(string)) *guestForwards {
@@ -121,6 +122,11 @@ func (g *guestForwards) forward(ctx context.Context, conn net.Conn, spec Forward
 	for {
 		n, rerr := conn.Read(buf)
 		if n > 0 {
+			// Wait for room on the host's side before sending, so a fast local
+			// writer cannot outrun whatever is reading at the far end.
+			if werr := fwd.out.reserve(ctx, n); werr != nil {
+				return
+			}
 			g.send(protocol.Frame{
 				Type:    protocol.TypeData,
 				Channel: ch,
@@ -128,9 +134,6 @@ func (g *guestForwards) forward(ctx context.Context, conn net.Conn, spec Forward
 			})
 		}
 		if rerr != nil {
-			if rerr != io.EOF {
-				return
-			}
 			return
 		}
 	}
@@ -152,7 +155,11 @@ func (g *guestForwards) register(conn net.Conn) (protocol.ChannelID, *guestForwa
 	g.nextChan++
 	ch := g.nextChan
 
-	fwd := &guestForward{conn: conn, ready: make(chan error, 1)}
+	fwd := &guestForward{
+		conn:  conn,
+		ready: make(chan error, 1),
+		out:   newWindow(protocol.InitialWindow),
+	}
 	g.conns[ch] = fwd
 	return ch, fwd, nil
 }
@@ -174,6 +181,16 @@ func (g *guestForwards) handle(f protocol.Frame) {
 	case protocol.TypeData:
 		if _, err := fwd.conn.Write(f.Payload); err != nil {
 			g.closeChannel(f.Channel, true)
+			return
+		}
+		// Spent, so the host may send that much more. Crediting after the
+		// write is what ties the window to the local reader's pace.
+		g.credit(f.Channel, len(f.Payload))
+
+	case protocol.TypeWindow:
+		var win protocol.Window
+		if err := protocol.DecodeControl(f, &win); err == nil {
+			fwd.out.grant(win.Bytes)
 		}
 
 	case protocol.TypeClose:
@@ -194,6 +211,17 @@ func (g *guestForwards) handle(f protocol.Frame) {
 	}
 }
 
+// credit returns window space to the host.
+func (g *guestForwards) credit(ch protocol.ChannelID, n int) {
+	if n <= 0 {
+		return
+	}
+	if fr, err := protocol.NewControl(protocol.TypeWindow, protocol.Window{Bytes: n}); err == nil {
+		fr.Channel = ch
+		g.send(fr)
+	}
+}
+
 // closeChannel drops a forward. tellHost is false when the host is the one who
 // closed it.
 func (g *guestForwards) closeChannel(ch protocol.ChannelID, tellHost bool) {
@@ -207,6 +235,7 @@ func (g *guestForwards) closeChannel(ch protocol.ChannelID, tellHost bool) {
 		return
 	}
 
+	fwd.out.close()
 	fwd.conn.Close()
 	fwd.once.Do(func() { fwd.ready <- nil })
 
@@ -228,9 +257,9 @@ func (g *guestForwards) Close() {
 	g.closed = true
 	listeners := g.listeners
 	g.listeners = nil
-	live := make([]net.Conn, 0, len(g.conns))
+	live := make([]*guestForward, 0, len(g.conns))
 	for ch, f := range g.conns {
-		live = append(live, f.conn)
+		live = append(live, f)
 		delete(g.conns, ch)
 	}
 	g.mu.Unlock()
@@ -238,8 +267,9 @@ func (g *guestForwards) Close() {
 	for _, ln := range listeners {
 		ln.Close()
 	}
-	for _, c := range live {
-		c.Close()
+	for _, f := range live {
+		f.out.close()
+		f.conn.Close()
 	}
 	g.wg.Wait()
 }

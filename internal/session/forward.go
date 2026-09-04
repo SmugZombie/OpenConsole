@@ -26,11 +26,17 @@ import (
 // forwardQueueDepth bounds how much forwarded data may be waiting for one
 // guest.
 //
-// Terminal output can be dropped when a guest falls behind — the screen looks
-// wrong for a moment. A TCP stream cannot: dropping bytes silently corrupts
-// whatever is being carried. So a forward that overruns this is closed, and the
-// forwarded connection resets rather than lying to either end.
-const forwardQueueDepth = 128
+// End-to-end flow control is what actually keeps this from filling: neither
+// side may send more than its peer has granted, so the amount in flight is
+// bounded by the window. This is sized comfortably above that so it acts as a
+// backstop rather than a limit anyone reaches in normal use.
+//
+// It still matters, because terminal output and TCP bytes fail differently.
+// Dropping terminal output makes a screen look wrong for a moment; dropping
+// TCP bytes silently corrupts whatever is being carried. So a forward that
+// somehow overruns is closed, and that one connection resets rather than either
+// end being lied to.
+const forwardQueueDepth = (protocol.InitialWindow / (32 << 10)) * 4
 
 // forward is one guest's TCP stream, as the relay sees it.
 type forward struct {
@@ -205,14 +211,14 @@ func (b *Bridge) fromGuestChannel(ctx context.Context, s Stream, g *guestConn, f
 	case protocol.TypeOpen:
 		return b.openGuestChannel(ctx, s, g, f)
 
-	case protocol.TypeData, protocol.TypeClose, protocol.TypeError:
+	case protocol.TypeData, protocol.TypeWindow, protocol.TypeClose, protocol.TypeError:
 		hostChan, ok := b.lookupGuestChannel(g, f.Channel)
 		if !ok {
 			// Frames after a close are ordinary — both ends can close at once
 			// — so this is not worth an error back to the guest.
 			return nil
 		}
-		if f.Type != protocol.TypeData {
+		if f.Type == protocol.TypeClose || f.Type == protocol.TypeError {
 			b.closeForward(hostChan)
 		}
 		return b.toHost(ctx, onChannel(f, hostChan))
@@ -282,11 +288,10 @@ func (b *Bridge) fromHostChannel(f protocol.Frame) {
 	closing := f.Type == protocol.TypeClose || f.Type == protocol.TypeError
 
 	if !fwd.queue(out) && !closing {
-		// The guest is not draining a forwarded stream fast enough. Terminal
-		// output could simply be dropped here; TCP bytes cannot, because
-		// losing them silently corrupts whatever is being carried. Close the
-		// one stream instead, and leave the terminal alone.
-		b.log.Warn("forward fell behind; closing it",
+		// Flow control should have prevented this: the host cannot send more
+		// than the guest granted. Reaching here means a peer ignored the
+		// window, so close the one stream rather than drop bytes into it.
+		b.log.Warn("forward exceeded its window; closing it",
 			slog.String("session_id", b.id),
 			slog.Uint64("channel", uint64(f.Channel)))
 		b.closeForward(f.Channel)
