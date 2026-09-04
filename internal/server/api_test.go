@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -112,8 +113,14 @@ func TestGetSessionNotFound(t *testing.T) {
 }
 
 func TestGetExpiredSessionIsNotFound(t *testing.T) {
-	// A TTL this short expires between the create and the lookup.
-	m := session.NewManager(session.Options{TTL: time.Nanosecond})
+	// The clock is stepped rather than raced against. A TTL short enough to
+	// expire "between the create and the lookup" relies on the platform
+	// resolving time finely enough to notice, and on Windows both calls can
+	// land on the same tick — where a session with a one-nanosecond life is
+	// still valid.
+	var clock atomicClock
+	clock.set(time.Now())
+	m := session.NewManager(session.Options{TTL: time.Minute, Now: clock.now})
 	t.Cleanup(m.Close)
 	api := NewAPI(m, nil, slog.New(slog.NewJSONHandler(io.Discard, nil)), "test", context.Background())
 	h := api.Routes()
@@ -125,12 +132,24 @@ func TestGetExpiredSessionIsNotFound(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
+	clock.advance(2 * time.Minute)
+
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+created.SessionID, nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+// atomicClock is a clock a test moves by hand.
+//
+// The manager reads it from its own goroutines, so the reads and the writes
+// have to be safe against each other and not merely ordered by the test.
+type atomicClock struct{ nanos atomic.Int64 }
+
+func (c *atomicClock) set(t time.Time)         { c.nanos.Store(t.UnixNano()) }
+func (c *atomicClock) advance(d time.Duration) { c.nanos.Add(int64(d)) }
+func (c *atomicClock) now() time.Time          { return time.Unix(0, c.nanos.Load()) }
 
 func TestMethodNotAllowed(t *testing.T) {
 	_, h := testAPI(t, time.Minute)
