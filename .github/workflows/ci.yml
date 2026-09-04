@@ -58,19 +58,8 @@ jobs:
       # real Windows: cross-compiling proves it builds, not that a shell ever
       # starts on it. The race detector is left to the Linux job, which runs
       # the same concurrent code with a C toolchain it can rely on.
-      #
-      # One forwarding test is excluded, and it is not a Windows problem. The
-      # slow-reader test has stopped 32KB short of the end of a 4MB stream
-      # after a full minute, having passed in a second on the same runner the
-      # run before and in 0.06s on a laptop. 32KB is exactly the granularity of
-      # a window update, so the suspicion is flow control rather than anything
-      # about this platform. It is unexplained, and a longer timeout would only
-      # hide it; it comes back when somebody understands it.
       - name: go test
-        run: >
-          go test
-          -skip 'TestForwardEndToEndSlowReaderDoesNotResetTheStream'
-          ./...
+        run: go test ./...
 
       # install.ps1 is only ever run by someone piping it into PowerShell, so
       # a syntax error in it would first be found by a user. Parsing it here

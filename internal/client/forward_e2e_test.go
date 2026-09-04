@@ -265,16 +265,30 @@ func TestForwardEndToEndSlowReaderDoesNotResetTheStream(t *testing.T) {
 
 	// Read deliberately slowly, in small chunks with pauses, the way a guest on
 	// a poor link behaves.
+	//
+	// The deadline is per read, not one budget for the whole transfer. What is
+	// being asserted is that the stream is never reset — that bytes keep
+	// arriving — and a slow machine is not the same thing as a broken stream.
+	// A single deadline for the lot cannot tell them apart: this failed once on
+	// a CI runner one frame short of four megabytes, having done the same
+	// transfer in a second on the same runner the run before, and there was no
+	// way to tell from the failure whether anything had gone wrong at all.
+	const betweenReads = 20 * time.Second
+
 	got := make([]byte, 0, total)
 	buf := make([]byte, 4096)
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	start := time.Now()
 	for len(got) < total {
+		lastByte := time.Now()
+		conn.SetReadDeadline(lastByte.Add(betweenReads))
 		n, err := conn.Read(buf)
 		if n > 0 {
 			got = append(got, buf[:n]...)
 		}
 		if err != nil {
-			t.Fatalf("read stalled after %d of %d bytes: %v", len(got), total, err)
+			t.Fatalf("the stream stopped after %d of %d bytes: nothing arrived for %v (%v into the transfer): %v",
+				len(got), total, time.Since(lastByte).Round(time.Millisecond),
+				time.Since(start).Round(time.Millisecond), err)
 		}
 		if len(got)%(256<<10) < 4096 {
 			time.Sleep(2 * time.Millisecond)
