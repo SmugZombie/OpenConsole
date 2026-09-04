@@ -408,7 +408,7 @@ working UI. Rebuild and commit it alongside any change under `web/src`. See
 
 ## Security
 
-Not yet suitable for exposure to the public internet:
+Current Known Gaps:
 
 - Session creation is unauthenticated by default. It is rate limited and capped,
   and `OPENCONSOLE_CREATE_TOKEN` closes it entirely, but an open relay is open.
