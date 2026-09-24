@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SmugZombie/OpenConsole/internal/release"
 )
 
 // Defaults for every configurable value.
@@ -86,6 +88,11 @@ type Config struct {
 	// is fine for a trial and wrong for anything reached twice.
 	SSHHostKey string
 
+	// ClientVersion is the client release the relay tells clients to run:
+	// ClientVersionLatest (or empty) follows the latest release on GitHub, and
+	// a version such as v0.3.3 pins that one.
+	ClientVersion string
+
 	// RunHealthCheck makes the process probe a running relay and exit,
 	// instead of serving. It backs the container HEALTHCHECK.
 	RunHealthCheck bool
@@ -101,8 +108,12 @@ func DefaultConfig() Config {
 		CreateRatePerMin: DefaultCreateRate,
 		CreateBurst:      DefaultCreateBurst,
 		MaxSessions:      DefaultMaxSessions,
+		ClientVersion:    ClientVersionLatest,
 	}
 }
+
+// ClientVersionLatest makes the relay follow the latest client release.
+const ClientVersionLatest = "latest"
 
 // Environment variables recognised by LoadConfig.
 const (
@@ -119,6 +130,7 @@ const (
 	EnvMaxSessions    = "OPENCONSOLE_MAX_SESSIONS"
 	EnvCreateToken    = "OPENCONSOLE_CREATE_TOKEN"
 	EnvTrustedProxies = "OPENCONSOLE_TRUSTED_PROXIES"
+	EnvClientVersion  = "OPENCONSOLE_CLIENT_VERSION"
 )
 
 // LoadConfig resolves configuration from defaults, then environment variables,
@@ -170,6 +182,9 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 	// The secret is read from the environment only. A command line is visible
 	// to every process on the machine.
 	cfg.CreateToken = strings.TrimSpace(getenv(EnvCreateToken))
+	if v := getenv(EnvClientVersion); v != "" {
+		cfg.ClientVersion = v
+	}
 	trustedSpec := getenv(EnvTrustedProxies)
 
 	fs := flag.NewFlagSet("openconsole-server", flag.ContinueOnError)
@@ -191,6 +206,8 @@ func LoadConfig(args []string, getenv func(string) string, output io.Writer) (Co
 		"maximum live sessions, 0 for no limit (env "+EnvMaxSessions+")")
 	trusted := fs.String("trusted-proxies", trustedSpec,
 		"CIDRs whose X-Forwarded-For is believed (env "+EnvTrustedProxies+")")
+	fs.StringVar(&cfg.ClientVersion, "client-version", cfg.ClientVersion,
+		"client release to tell clients to run: \"latest\" follows GitHub, or pin one like v0.3.3 (env "+EnvClientVersion+")")
 	fs.BoolVar(&cfg.RunHealthCheck, "healthcheck", false, "probe a running relay's /health and exit (for container HEALTHCHECK)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -238,6 +255,11 @@ func (c Config) Validate() error {
 	}
 	if _, _, err := ParseSSHAdvertise(c.SSHAdvertise); err != nil {
 		return err
+	}
+	if v := c.ClientVersion; v != "" && v != ClientVersionLatest {
+		if _, ok := release.Parse(v); !ok {
+			return fmt.Errorf("client version %q must be %q or a release like v0.3.3", v, ClientVersionLatest)
+		}
 	}
 	return nil
 }

@@ -98,6 +98,12 @@ You only need this to **share** a terminal, or to join from one. To **join**,
 a browser needs nothing installed, and neither does
 `ssh <session-id>@your-relay`.
 
+When you share, `openconsole` mentions it if a newer release is out, with the
+command to update. It asks the relay, which keeps track of the latest release
+on GitHub by itself — publishing a client release needs no relay redeploy — or
+asks GitHub directly when the relay does not say. The check never delays or
+blocks a share, and development builds skip it.
+
 Any relay serves its own installers, so a self-hosted one works the same way:
 `curl -fsSL https://your-relay/install.sh | sh`, or
 `irm https://your-relay/install.ps1 | iex`.
@@ -233,7 +239,7 @@ The relay's REST surface, if you want to drive it yourself:
 
 ```sh
 curl -s localhost:8080/health
-# {"status":"ok","version":"dev","sessions":0,"tunnels":0}
+# {"status":"ok","version":"dev","sessions":0,"tunnels":0,"client_version":"v0.3.3"}
 
 curl -s -X POST localhost:8080/api/v1/sessions
 # {"session_id":"x5s5…","host_token":"…","guest_token":"…",
@@ -276,6 +282,7 @@ Precedence is **defaults → environment → flags**.
 | `-max-sessions` | `OPENCONSOLE_MAX_SESSIONS` | `512` | Live session ceiling, `0` for none |
 | — | `OPENCONSOLE_CREATE_TOKEN` | none | Secret required to create a session |
 | `-trusted-proxies` | `OPENCONSOLE_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
+| `-client-version` | `OPENCONSOLE_CLIENT_VERSION` | `latest` | Client release to tell clients to run: `latest` follows GitHub, or pin one like `v0.3.3` |
 | `-healthcheck` | — | — | Probe a running relay and exit |
 
 **Behind a reverse proxy, set `-trusted-proxies`.** Without it every request

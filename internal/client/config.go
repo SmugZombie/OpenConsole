@@ -61,6 +61,9 @@ type Config struct {
 	ReadOnly bool
 	// ShowVersion requests version output instead of starting a session.
 	ShowVersion bool
+	// Version is this client's own version, set by the program rather than a
+	// flag. It is what the update check compares against.
+	Version string
 }
 
 // LoadConfig resolves CLI configuration from defaults, the environment and

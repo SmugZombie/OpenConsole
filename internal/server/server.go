@@ -34,6 +34,7 @@ type Server struct {
 	sshAdvertiseHost string
 	sshAdvertisePort int
 	api              *API
+	clientRelease    *clientRelease
 
 	// teardownOnce guards cleanup, which every exit path from Run reaches.
 	teardownOnce sync.Once
@@ -64,6 +65,8 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 	api := NewAPI(sessions, bridges, log, version, baseCtx)
 	api.SetCreatePolicy(cfg)
+	clientRel := newClientRelease(cfg.ClientVersion, latestReleaseURL, log)
+	api.SetClientVersion(clientRel.Version)
 
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
@@ -107,6 +110,7 @@ func New(cfg Config, log *slog.Logger, version string) (*Server, error) {
 		ln:               ln,
 		ssh:              sshServer,
 		api:              api,
+		clientRelease:    clientRel,
 		sshAdvertiseHost: advertiseHost,
 		sshAdvertisePort: advertisePort,
 		baseCtx:          baseCtx,
@@ -179,6 +183,7 @@ func (s *Server) Run(ctx context.Context) error {
 	defer stopSweeper()
 	go s.sessions.Run(sweeperCtx)
 	go s.sweepRateLimiter(sweeperCtx)
+	go s.clientRelease.run(sweeperCtx)
 
 	// Every exit path tears the relay down, including the one where Serve
 	// fails on its own. Without this, an HTTP failure would leave the SSH

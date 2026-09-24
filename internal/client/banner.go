@@ -11,7 +11,9 @@ import (
 //
 // It goes to stderr so that redirecting the shared shell's output does not
 // capture, and thereby log, the ticket.
-func printBanner(w io.Writer, cfg Config, sess *Session, ticket Ticket, api *Client) {
+//
+// update, when not empty, is a newer client release to mention.
+func printBanner(w io.Writer, cfg Config, sess *Session, ticket Ticket, api *Client, update string) {
 	viewTicket, err := viewerTicket(ticket, sess)
 	if err != nil {
 		// A viewer credential that cannot be built is not fatal to the
@@ -27,6 +29,10 @@ func printBanner(w io.Writer, cfg Config, sess *Session, ticket Ticket, api *Cli
 		fmt.Fprintf(w, "  privacy:  end-to-end encrypted; the relay cannot read this terminal\n")
 	} else {
 		fmt.Fprintf(w, "  privacy:  NOT encrypted; whoever runs the relay can read and type here\n")
+	}
+	if update != "" {
+		fmt.Fprintf(w, "  update:   %s\n", updateNotice(update, cfg.Version))
+		fmt.Fprintf(w, "            %s\n", updateCommand(cfg.Server, update))
 	}
 
 	fmt.Fprintf(w, "\n  in a browser:\n    %s\n", api.JoinURL(ticket))

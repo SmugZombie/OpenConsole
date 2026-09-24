@@ -71,6 +71,7 @@ func runShare(ctx context.Context, args []string) (int, error) {
 		fmt.Printf("openconsole %s\n", version)
 		return 0, nil
 	}
+	cfg.Version = version
 	return client.Share(ctx, cfg, os.Stdin, os.Stdout, os.Stderr)
 }
 

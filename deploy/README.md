@@ -46,6 +46,13 @@ Every setting is an environment variable; see the table in the top-level README.
 | `OPENCONSOLE_SSH_ADDR` | unset — SSH joins disabled |
 | `OPENCONSOLE_SSH_HOST_KEY` | unset — ephemeral key |
 | `OPENCONSOLE_SSH_HOST` | unset — same host as the API |
+| `OPENCONSOLE_CLIENT_VERSION` | `latest` — follow GitHub's latest client release |
+
+The relay looks up the latest client release on GitHub at start and then
+hourly, and tells clients in `/health` so they can say when they are out of
+date. A new client release reaches users without redeploying the relay. To keep
+users on a particular release instead, pin it, e.g.
+`OPENCONSOLE_CLIENT_VERSION=v0.3.3`; nothing is looked up then.
 
 Logs are JSON on stderr. With SSH off there is nothing to mount and the
 container runs read-only with no volumes at all.
