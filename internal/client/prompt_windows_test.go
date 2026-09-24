@@ -5,13 +5,19 @@ package client
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
 func TestCmdPromptIsMarked(t *testing.T) {
 	env := unsetEnv(os.Environ(), "PROMPT")
-	// $P$G draws the drive, so the marker is followed by it: (>|<)C:\...>
-	startMarked(t, "cmd.exe", env, "", PromptMarker+`C:\`)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// $P$G draws the working directory, so the marker is followed by its
+	// drive: (>|<)D:\...>
+	startMarked(t, "cmd.exe", env, "", PromptMarker+filepath.VolumeName(wd)+`\`)
 }
 
 func TestPowerShellPromptIsMarked(t *testing.T) {
