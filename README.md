@@ -310,7 +310,9 @@ rather than guessed at.
 | — | `OPENCONSOLE_RELAY_TOKEN` | — | Secret, if the relay requires one to share |
 
 Inside a shared shell, `OPENCONSOLE=1` and `OPENCONSOLE_SESSION` are set, so a
-prompt or script can tell it is being watched.
+prompt or script can tell it is being watched. Running `openconsole` from
+inside a shared shell is refused, so one share never spawns another; separate
+shares started directly on the host are unaffected.
 
 ## Development
 

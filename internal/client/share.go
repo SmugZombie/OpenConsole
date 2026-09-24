@@ -53,6 +53,10 @@ const outboundQueue = 256
 //
 // It blocks until the shell exits. The returned int is the shell's exit code.
 func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Writer) (int, error) {
+	// Checked first, so a nested attempt never reaches the relay.
+	if id := os.Getenv(EnvSession); id != "" {
+		return 1, &NestedShareError{SessionID: id}
+	}
 	if err := cfg.Validate(); err != nil {
 		return 1, err
 	}
@@ -466,12 +470,31 @@ func (s *sender) err() error {
 	return s.failure
 }
 
+// EnvSession is set in a shared shell to the ID of the session sharing it.
+const EnvSession = "OPENCONSOLE_SESSION"
+
+// NestedShareError is returned when sharing is attempted from inside a shell
+// that is already being shared.
+//
+// One run of openconsole shares exactly one shell. A guest who could start a
+// second share from inside the first would get a fresh session, with its own
+// tickets, that the host never saw a banner for and cannot see the end of.
+// Separate shares started directly on the host are unaffected.
+type NestedShareError struct {
+	SessionID string
+}
+
+func (e *NestedShareError) Error() string {
+	return fmt.Sprintf("this shell is already being shared (session %s); "+
+		"openconsole cannot be started from inside a shared session", e.SessionID)
+}
+
 // sharedEnv marks the child shell so scripts and prompts can tell they are
 // being shared. The session ID is public; the tokens are not passed down.
 func sharedEnv(sessionID string) []string {
 	env := os.Environ()
 	return append(env,
 		"OPENCONSOLE=1",
-		"OPENCONSOLE_SESSION="+sessionID,
+		EnvSession+"="+sessionID,
 	)
 }
