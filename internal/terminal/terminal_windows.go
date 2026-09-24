@@ -15,7 +15,7 @@ import (
 // DefaultShell is used when neither Options.Shell nor %COMSPEC% names one.
 const DefaultShell = "cmd.exe"
 
-// shell resolves which program to run.
+// ResolveShell reports which program Start runs when Options.Shell is shell.
 //
 // $SHELL is deliberately ignored here, unlike on Unix. On Windows it is
 // normally set by an MSYS environment — Git Bash sets SHELL=/usr/bin/bash —
@@ -26,15 +26,18 @@ const DefaultShell = "cmd.exe"
 // for PowerShell 7. Guessing it from the environment is not possible with any
 // reliability, because PSModulePath is a machine-wide variable that cmd.exe
 // inherits too.
-func (o Options) shell() string {
-	if o.Shell != "" {
-		return o.Shell
+func ResolveShell(shell string) string {
+	if shell != "" {
+		return shell
 	}
 	if s := os.Getenv("COMSPEC"); s != "" {
 		return s
 	}
 	return DefaultShell
 }
+
+// shell resolves which program to run.
+func (o Options) shell() string { return ResolveShell(o.Shell) }
 
 // Start launches a shell on a new pseudo-console.
 func Start(opts Options) (*Terminal, error) {

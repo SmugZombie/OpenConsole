@@ -16,16 +16,19 @@ import (
 // DefaultShell is used when neither Options.Shell nor $SHELL names one.
 const DefaultShell = "/bin/sh"
 
-// shell resolves which program to run.
-func (o Options) shell() string {
-	if o.Shell != "" {
-		return o.Shell
+// ResolveShell reports which program Start runs when Options.Shell is shell.
+func ResolveShell(shell string) string {
+	if shell != "" {
+		return shell
 	}
 	if s := os.Getenv("SHELL"); s != "" {
 		return s
 	}
 	return DefaultShell
 }
+
+// shell resolves which program to run.
+func (o Options) shell() string { return ResolveShell(o.Shell) }
 
 // unixPTY is a shell on a Unix pseudo-terminal.
 type unixPTY struct {

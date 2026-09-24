@@ -309,6 +309,11 @@ rather than guessed at.
 | — | `OPENCONSOLE_TICKET` | — | Ticket for `join`, so it stays out of `ps` |
 | — | `OPENCONSOLE_RELAY_TOKEN` | — | Secret, if the relay requires one to share |
 
+While a shell is shared its prompt starts with `(>|<)`, so anyone who can see
+the screen can tell — `regli@m4mbp` becomes `(>|<)regli@m4mbp`. Your own rc
+files and theme still load as normal; the marker is added after them. This
+works for zsh, bash, sh, cmd.exe and PowerShell; other shells start unchanged.
+
 Inside a shared shell, `OPENCONSOLE=1` and `OPENCONSOLE_SESSION` are set, so a
 prompt or script can tell it is being watched. Running `openconsole` from
 inside a shared shell is refused, so one share never spawns another; separate

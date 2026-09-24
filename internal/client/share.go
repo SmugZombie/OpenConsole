@@ -84,11 +84,23 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 
 	cols, rows := terminalSize(stdout)
 
+	shell := terminal.ResolveShell(cfg.Shell)
+	prompt, err := markPrompt(shell, sharedEnv(sess.SessionID))
+	if err != nil {
+		// The marker is a courtesy; failing to set it up is no reason not to
+		// share.
+		fmt.Fprintf(stderr, "openconsole: could not mark the prompt: %v\n", err)
+		prompt = promptSetup{Env: sharedEnv(sess.SessionID), Cleanup: func() {}}
+	}
+	// Deferred before the shell, so it runs after the shell is gone.
+	defer prompt.Cleanup()
+
 	term, err := terminal.Start(terminal.Options{
-		Shell: cfg.Shell,
+		Shell: shell,
+		Args:  prompt.Args,
 		Cols:  cols,
 		Rows:  rows,
-		Env:   sharedEnv(sess.SessionID),
+		Env:   prompt.Env,
 	})
 	if err != nil {
 		return 1, err
