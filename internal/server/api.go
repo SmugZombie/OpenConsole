@@ -34,6 +34,10 @@ type healthResponse struct {
 	// SSHHost is the name guests should ssh to, when it differs from the one
 	// they reached the API on. Empty means they are the same.
 	SSHHost string `json:"ssh_host,omitempty"`
+	// ClientVersion is the client release clients should run, so they can say
+	// when they are out of date. Distinct from Version, which is the relay's
+	// own build. Empty when the relay does not know.
+	ClientVersion string `json:"client_version,omitempty"`
 }
 
 // createSessionResponse is returned once, to the creator, and is the only
@@ -86,6 +90,9 @@ type API struct {
 	// sshHost is the name to advertise, empty when it matches the API's.
 	sshHost string
 
+	// clientVersion reports the client release to advertise; nil for none.
+	clientVersion func() string
+
 	// createLimit throttles session creation per source; nil disables it.
 	createLimit *rateLimiter
 	// createToken, when set, is required to create a session.
@@ -131,6 +138,9 @@ func (a *API) SetSSHPort(port int) { a.sshPort = port }
 // from the one the API is reached on.
 func (a *API) SetSSHHost(host string) { a.sshHost = host }
 
+// SetClientVersion supplies the client release to advertise in /health.
+func (a *API) SetClientVersion(f func() string) { a.clientVersion = f }
+
 // SetCreatePolicy configures who may create sessions and how often.
 func (a *API) SetCreatePolicy(cfg Config) {
 	a.createLimit = newRateLimiter(cfg.CreateRatePerMin, cfg.CreateBurst, nil)
@@ -161,13 +171,18 @@ func (a *API) Routes() http.Handler {
 }
 
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
+	var clientVersion string
+	if a.clientVersion != nil {
+		clientVersion = a.clientVersion()
+	}
 	writeJSON(w, http.StatusOK, healthResponse{
-		Status:   "ok",
-		Version:  a.version,
-		Sessions: a.sessions.Len(),
-		Tunnels:  a.bridges.Len(),
-		SSHPort:  a.sshPort,
-		SSHHost:  a.sshHost,
+		Status:        "ok",
+		Version:       a.version,
+		Sessions:      a.sessions.Len(),
+		Tunnels:       a.bridges.Len(),
+		SSHPort:       a.sshPort,
+		SSHHost:       a.sshHost,
+		ClientVersion: clientVersion,
 	})
 }
 

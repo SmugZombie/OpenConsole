@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/SmugZombie/OpenConsole/internal/e2e"
 	"github.com/SmugZombie/OpenConsole/internal/protocol"
@@ -69,6 +70,12 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 		return 1, ErrNotATerminal
 	}
 
+	// Started now so it runs alongside session setup rather than adding to
+	// it. The channel is buffered so an answer nobody waits for does not
+	// strand the goroutine.
+	update := make(chan string, 1)
+	go func() { update <- checkForUpdate(ctx, api, cfg.Version) }()
+
 	sess, err := api.CreateSession(ctx)
 	if err != nil {
 		return 1, err
@@ -123,7 +130,17 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 	}
 	defer conn.Close("host exited")
 
-	printBanner(stderr, cfg, sess, ticket, api)
+	// Against a distant relay the check has normally finished by now. Against
+	// a nearby one it may not have, and holding the banner for it would slow
+	// every share; an answer that misses the banner is given at the end.
+	var newer string
+	checked := false
+	select {
+	case newer = <-update:
+		checked = true
+	case <-time.After(500 * time.Millisecond):
+	}
+	printBanner(stderr, cfg, sess, ticket, api, newer)
 
 	restore, err := rawTerminal(stdin)
 	if err != nil {
@@ -149,6 +166,16 @@ func Share(ctx context.Context, cfg Config, stdin, stdout *os.File, stderr io.Wr
 			sess.SessionID, shareErr)
 	} else {
 		fmt.Fprintf(stderr, "\nopenconsole: session %s ended\n", sess.SessionID)
+	}
+	if !checked {
+		select {
+		case newer = <-update:
+			if newer != "" {
+				fmt.Fprintf(stderr, "%s; update with:\n  %s\n",
+					updateNotice(newer, cfg.Version), updateCommand(cfg.Server, newer))
+			}
+		default:
+		}
 	}
 	return code, nil
 }
