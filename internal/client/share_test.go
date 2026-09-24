@@ -171,3 +171,33 @@ func TestSenderSendIsNoOpAfterFailure(t *testing.T) {
 		t.Fatalf("err() = %v, want the original failure", got)
 	}
 }
+
+func TestShareRefusesToNestInsideASharedShell(t *testing.T) {
+	t.Setenv(EnvSession, "abc123")
+
+	// The config points at nothing: the refusal must come before any attempt
+	// to reach a relay or touch the terminal.
+	code, err := Share(context.Background(), Config{}, nil, nil, io.Discard)
+
+	var nested *NestedShareError
+	if !errors.As(err, &nested) {
+		t.Fatalf("err = %v, want *NestedShareError", err)
+	}
+	if nested.SessionID != "abc123" {
+		t.Errorf("SessionID = %q, want %q", nested.SessionID, "abc123")
+	}
+	if code != 1 {
+		t.Errorf("code = %d, want 1", code)
+	}
+}
+
+func TestSharedEnvMarksTheSession(t *testing.T) {
+	env := sharedEnv("abc123")
+	want := EnvSession + "=abc123"
+	for _, kv := range env {
+		if kv == want {
+			return
+		}
+	}
+	t.Errorf("sharedEnv is missing %q", want)
+}
